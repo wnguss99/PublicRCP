@@ -190,10 +190,12 @@ export interface CommandRunner {
 export class DefaultCommandRunner implements CommandRunner {
   exec(command: string, args: string[], options?: CommandRunnerOptions): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
+      // Windows: .cmd/.bat/.ps1 launchers require shell: true (Node.js #29466)
+      const useShell = process.platform === 'win32';
       const child = execFile(
         command,
         args,
-        { cwd: options?.cwd, encoding: 'utf-8' },
+        { cwd: options?.cwd, encoding: 'utf-8', shell: useShell },
         (err, stdout, stderr) => {
           if (err) {
             reject(err);
@@ -210,7 +212,8 @@ export class DefaultCommandRunner implements CommandRunner {
   }
 
   spawn(command: string, args: string[], options?: CommandRunnerOptions): ChildProcess {
-    return spawn(command, args, options?.cwd ? { cwd: options.cwd } : undefined);
+    const useShell = process.platform === 'win32';
+    return spawn(command, args, { ...(options?.cwd ? { cwd: options.cwd } : {}), shell: useShell });
   }
 }
 

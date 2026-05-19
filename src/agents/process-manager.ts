@@ -1,8 +1,38 @@
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Logger } from '../utils';
 import { ProcessInfo as ProcessInfoType } from './types';
+
+// On Windows, `spawn('claude', ...)` cannot launch `claude.cmd` or `claude.ps1`
+// directly (Node.js #29466). Resolve to the full `.cmd` path via PATH lookup
+// so we can spawn without `shell: true` (which would mangle args with parens / *).
+function resolveWindowsCommand(command: string): string {
+  if (path.isAbsolute(command) || command.includes(path.sep)) {
+    return command;
+  }
+
+  const pathEnv = process.env.PATH || process.env.Path || '';
+  const pathExtEnv = process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD';
+  const extensions = pathExtEnv.split(';').map((e) => e.trim()).filter(Boolean);
+
+  for (const dir of pathEnv.split(';').filter(Boolean)) {
+    for (const ext of extensions) {
+      const candidate = path.join(dir, command + ext);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    const bare = path.join(dir, command);
+    if (fs.existsSync(bare)) {
+      return bare;
+    }
+  }
+
+  return command;
+}
 
 export interface ProcessSpawner {
   spawn(command: string, args: string[], options: SpawnOptions): ChildProcess;
@@ -70,19 +100,24 @@ export class ProcessManager extends EventEmitter {
 
     const spawnOptions: SpawnOptions = {
       cwd: workingDirectory,
-      shell: false,
+      // Windows: shell: true is required to launch .cmd/.bat (Node.js #29466).
+      // child_process.spawn auto-quotes args for cmd.exe so parens/wildcards in
+      // --allowedTools (e.g. "Bash(npm run:*)") stay intact.
+      shell: this.isWindows,
       windowsHide: true,
       env,
     };
 
+    const resolvedCommand = this.isWindows ? resolveWindowsCommand(command) : command;
+
     this.logger.info('Spawning Claude CLI process', {
-      command,
+      command: resolvedCommand,
       args: args.length,
       workingDirectory,
     });
 
     try {
-      this.process = this.spawner.spawn(command, args, spawnOptions);
+      this.process = this.spawner.spawn(resolvedCommand, args, spawnOptions);
     } catch (error) {
       this.logger.error('Failed to spawn process', {
         error: error instanceof Error ? error.message : 'Unknown error',

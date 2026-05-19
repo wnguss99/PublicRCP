@@ -42,6 +42,9 @@ data/
 # Claudito
 /.claudito
 
+# bkit audit logs (contains local paths and session data)
+/.bkit/
+
 # Solito / Solardi
 /.solito
 /.solardi

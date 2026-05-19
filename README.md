@@ -1,8 +1,17 @@
-# Claudito
+# Claudito (Windows + Korean fork)
 
-[![npm version](https://img.shields.io/npm/v/claudito.svg)](https://www.npmjs.com/package/claudito)
-[![CI](https://github.com/comfortablynumb/claudito/actions/workflows/ci.yml/badge.svg)](https://github.com/comfortablynumb/claudito/actions/workflows/ci.yml)
+> **Fork notice**: This is a fork of [comfortablynumb/claudito](https://github.com/comfortablynumb/claudito) (MIT).
+> See [CHANGES.md](./CHANGES.md) for the patches added in this fork.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## What this fork adds
+
+- **Windows `.cmd` spawn fix** — Resolves `claude.cmd` via PATH and uses `shell: true` so the agent can actually launch on Windows (vs. `spawn EINVAL` / `ENOENT`).
+- **Fixed credentials via `.env`** — `dotenv/config` preload on `npm start`, so `CLAUDITO_USERNAME` / `CLAUDITO_PASSWORD` / `PORT` are loaded from a project-local `.env` instead of auto-generated each restart.
+- **Korean + English font stack** — `Consolas` / `Malgun Gothic` (Windows defaults) so Korean characters render correctly alongside Latin glyphs.
+
+---
 
 > **Warning**: This project is under active development. Features may change, and bugs are expected. Use at your own risk.
 

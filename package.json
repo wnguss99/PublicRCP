@@ -12,7 +12,7 @@
     "build": "tsc",
     "build-and-start": "npm run build && npm run start",
     "build-and-start-loop": "node bin/start-loop.js",
-    "start": "node dist/index.js",
+    "start": "node -r dotenv/config dist/index.js",
     "cli": "node dist/cli.js",
     "prepublishOnly": "npm run build",
     "test": "jest && jest --config jest.frontend.config.js",
@@ -40,12 +40,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anthropics/claudito.git"
+    "url": "git+https://github.com/comfortablynumb/claudito.git"
   },
   "bugs": {
-    "url": "https://github.com/anthropics/claudito/issues"
+    "url": "https://github.com/comfortablynumb/claudito/issues"
   },
-  "homepage": "https://github.com/anthropics/claudito#readme",
+  "homepage": "https://github.com/comfortablynumb/claudito#readme",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -87,6 +87,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "ai": "^6.0.116",
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
     "node-pty": "^1.1.0",
     "qrcode-terminal": "^0.12.0",
