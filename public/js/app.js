@@ -3450,7 +3450,9 @@
         state.messageSending = false;
         $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
-        $input.focus();
+        if (!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches)) {
+          $input.focus();
+        }
       });
   }
 
@@ -3545,7 +3547,9 @@
           hideContentLoading();
           $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
-          $input.focus();
+          if (!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches)) {
+            $input.focus();
+          }
         }
       });
   }

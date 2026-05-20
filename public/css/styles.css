@@ -1,7 +1,7 @@
 /* Base font size and font families (VS Code default style, Korean + English) */
 :root {
   --claudito-font-size: 17px;
-  --claudito-conversation-font-size: 0.95rem;
+  --claudito-conversation-font-size: 1.07rem;
   --claudito-font-sans: 'Malgun Gothic', '맑은 고딕', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --claudito-font-mono: Consolas, 'Cascadia Code', 'D2Coding', 'Malgun Gothic', '맑은 고딕', 'Courier New', monospace;
 }
