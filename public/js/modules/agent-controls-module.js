@@ -18,6 +18,24 @@
   var updateInputHint;
   var updateRalphLoopPauseButton;
 
+  // --- Working indicator (VS Code "Forging…" style) ---
+  // Gerund verbs cycled while the agent is actively working.
+  var WORKING_VERBS = [
+    'Forging', 'Brewing', 'Conjuring', 'Crafting', 'Channeling',
+    'Computing', 'Pondering', 'Synthesizing', 'Weaving', 'Tinkering',
+    'Orchestrating', 'Manifesting', 'Percolating', 'Cogitating', 'Sculpting',
+    'Assembling', 'Distilling', 'Wrangling', 'Calibrating', 'Hatching'
+  ];
+  var VERB_CHANGE_SECONDS = 4;
+
+  // Internal indicator state, combined in refreshIndicator().
+  var agentRunning = false;
+  var agentWaiting = false;
+  var ralphStatusText = null;
+  var workingTimer = null;
+  var workingStartTime = 0;
+  var workingVerbIndex = 0;
+
   function init(deps) {
     state = deps.state;
     findProjectById = deps.findProjectById;
@@ -44,15 +62,91 @@
   }
 
   function showAgentRunningIndicator(isRunning, statusText) {
+    agentRunning = !!isRunning;
+    ralphStatusText = statusText || null;
+    if (!agentRunning) {
+      agentWaiting = false;
+    }
+    refreshIndicator();
+  }
+
+  /**
+   * Tells the indicator the agent is idle-waiting for user input.
+   * While waiting, the working animation pauses (the agent isn't doing anything).
+   */
+  function setAgentWaiting(isWaiting) {
+    agentWaiting = !!isWaiting;
+    refreshIndicator();
+  }
+
+  /**
+   * Single source of truth for the toolbar indicator. Combines:
+   *   - not running        -> hidden
+   *   - Ralph Loop text    -> fixed label, no animation
+   *   - running + waiting  -> "Waiting for your input", no animation
+   *   - running + working  -> animated "Forging… 12s" verb cycle
+   */
+  function refreshIndicator() {
+    var container = $('#agent-working-indicator');
     var spinner = $('#agent-output-spinner');
     var label = $('#agent-status-label');
 
-    if (isRunning) {
-      spinner.removeClass('hidden');
-      label.text(statusText || 'Agent running...').removeClass('hidden');
-    } else {
+    if (!agentRunning) {
+      stopWorkingAnimation();
+      container.addClass('hidden');
       spinner.addClass('hidden');
       label.addClass('hidden');
+      return;
+    }
+
+    container.removeClass('hidden');
+    label.removeClass('hidden');
+
+    if (ralphStatusText) {
+      stopWorkingAnimation();
+      spinner.removeClass('hidden');
+      label.text(ralphStatusText);
+      return;
+    }
+
+    if (agentWaiting) {
+      stopWorkingAnimation();
+      spinner.addClass('hidden');
+      label.text('Waiting for your input');
+      return;
+    }
+
+    // Agent is actively working — animate.
+    spinner.removeClass('hidden');
+    startWorkingAnimation();
+  }
+
+  function startWorkingAnimation() {
+    if (!workingTimer) {
+      workingStartTime = Date.now();
+      workingVerbIndex = Math.floor(Math.random() * WORKING_VERBS.length);
+      workingTimer = setInterval(function() {
+        var elapsed = Math.floor((Date.now() - workingStartTime) / 1000);
+        if (elapsed > 0 && elapsed % VERB_CHANGE_SECONDS === 0) {
+          workingVerbIndex = (workingVerbIndex + 1) % WORKING_VERBS.length;
+        }
+        renderWorkingLabel();
+      }, 1000);
+    }
+    // Always refresh the label — the indicator element may have been re-rendered.
+    renderWorkingLabel();
+  }
+
+  function renderWorkingLabel() {
+    var elapsed = Math.floor((Date.now() - workingStartTime) / 1000);
+    var verb = WORKING_VERBS[workingVerbIndex];
+    $('#agent-status-label').text(verb + '… ' + elapsed + 's');
+  }
+
+  function stopWorkingAnimation() {
+    if (workingTimer) {
+      clearInterval(workingTimer);
+      workingTimer = null;
     }
   }
 
@@ -153,6 +247,7 @@
     init: init,
     updateStartStopButtons: updateStartStopButtons,
     showAgentRunningIndicator: showAgentRunningIndicator,
+    setAgentWaiting: setAgentWaiting,
     updateCancelButton: updateCancelButton,
     updateInputArea: updateInputArea,
     formatRalphLoopStatusForLabel: formatRalphLoopStatusForLabel,

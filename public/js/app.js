@@ -3751,6 +3751,7 @@
           state.currentAgentMode = data.mode;
           state.queuedMessageCount = data.queuedMessageCount || 0;
           showAgentRunningIndicator(true);
+          AgentControlsModule.setAgentWaiting(!!data.isWaitingForInput);
           updateQueuedMessagesDisplay();
           startAgentStatusPolling(projectId); // Start polling as fallback
         } else {
@@ -5518,6 +5519,7 @@
         // Also update global state for selected project
         state.waitingVersion = serverVersion;
         updateWaitingIndicator(isWaiting);
+        AgentControlsModule.setAgentWaiting(isWaiting);
         updateCancelButton();
 
         // If agent became idle and there's a pending mode change, apply it

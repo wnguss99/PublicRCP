@@ -56,6 +56,8 @@ describe('AgentControlsModule', () => {
   });
 
   afterEach(() => {
+    // Clear any running working-indicator interval before wiping the DOM.
+    AgentControlsModule.showAgentRunningIndicator(false);
     document.body.innerHTML = '';
     jest.clearAllMocks();
   });
@@ -204,10 +206,12 @@ describe('AgentControlsModule', () => {
       expect($('#agent-status-label').hasClass('hidden')).toBe(false);
     });
 
-    it('should set default status text when running', () => {
+    it('should show an animated working verb when running without status text', () => {
       AgentControlsModule.showAgentRunningIndicator(true);
 
-      expect(document.getElementById('agent-status-label').textContent).toBe('Agent running...');
+      // VS Code-style indicator: "<Verb>… <n>s"
+      expect(document.getElementById('agent-status-label').textContent).toMatch(/^.+…\s\d+s$/);
+      AgentControlsModule.showAgentRunningIndicator(false);
     });
 
     it('should set custom status text when provided', () => {
@@ -233,17 +237,27 @@ describe('AgentControlsModule', () => {
       expect($('#agent-status-label').hasClass('hidden')).toBe(true);
     });
 
-    it('should use empty string as status text when explicitly passed', () => {
+    it('should animate the working verb when empty string is passed as status text', () => {
       AgentControlsModule.showAgentRunningIndicator(true, '');
 
-      // Empty string is falsy, so it falls back to default
-      expect(document.getElementById('agent-status-label').textContent).toBe('Agent running...');
+      // Empty string is falsy → falls through to the animated working indicator
+      expect(document.getElementById('agent-status-label').textContent).toMatch(/^.+…\s\d+s$/);
+      AgentControlsModule.showAgentRunningIndicator(false);
     });
 
-    it('should use default text when null is passed as status text', () => {
+    it('should animate the working verb when null is passed as status text', () => {
       AgentControlsModule.showAgentRunningIndicator(true, null);
 
-      expect(document.getElementById('agent-status-label').textContent).toBe('Agent running...');
+      expect(document.getElementById('agent-status-label').textContent).toMatch(/^.+…\s\d+s$/);
+      AgentControlsModule.showAgentRunningIndicator(false);
+    });
+
+    it('should show "Waiting for your input" when agent is running but waiting', () => {
+      AgentControlsModule.showAgentRunningIndicator(true);
+      AgentControlsModule.setAgentWaiting(true);
+
+      expect(document.getElementById('agent-status-label').textContent).toBe('Waiting for your input');
+      AgentControlsModule.showAgentRunningIndicator(false);
     });
 
     it('should update text when called repeatedly with different status', () => {
