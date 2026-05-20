@@ -3283,8 +3283,14 @@
     var isBlocked = promptType !== null;
 
     // Disable input and send button when prompt is active
-    $('#input-message').prop('disabled', isBlocked);
+    var $inputMsg = $('#input-message');
+    $inputMsg.prop('disabled', isBlocked);
     $('#btn-send-message').prop('disabled', isBlocked);
+    // Re-apply inputmode=none after disabled toggle on mobile (disabled clears attributes)
+    if (!isBlocked && $inputMsg.attr('inputmode') === undefined && state.messageSending) {
+      var isMobile = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+      if (isMobile) $inputMsg.attr('inputmode', 'none');
+    }
 
     if (isBlocked) {
       var placeholder = promptType === 'compacting'
@@ -3459,7 +3465,9 @@
         state.messageSending = false;
         $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
-        if (!isTouchDevice) {
+        if (isTouchDevice) {
+          $input.attr('inputmode', 'none');
+        } else {
           $input.focus();
         }
       });
@@ -3557,7 +3565,9 @@
           hideContentLoading();
           $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
-          if (!isTouchDevice) {
+          if (isTouchDevice) {
+            $input.attr('inputmode', 'none');
+          } else {
             $input.focus();
           }
         }
