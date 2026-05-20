@@ -3448,12 +3448,16 @@
       })
       .always(function() {
         state.messageSending = false;
-        $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
         if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
           $input.blur();
-          document.activeElement && document.activeElement.blur();
+          $input.prop('disabled', false);
+          setTimeout(function() {
+            $input.blur();
+            if (document.activeElement) document.activeElement.blur();
+          }, 100);
         } else {
+          $input.prop('disabled', false);
           $input.focus();
         }
       });
@@ -3548,12 +3552,16 @@
         // Only hide loading and re-enable inputs if still viewing the same project
         if (state.selectedProjectId === projectId) {
           hideContentLoading();
-          $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
           if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
             $input.blur();
-            document.activeElement && document.activeElement.blur();
+            $input.prop('disabled', false);
+            setTimeout(function() {
+              $input.blur();
+              if (document.activeElement) document.activeElement.blur();
+            }, 100);
           } else {
+            $input.prop('disabled', false);
             $input.focus();
           }
         }
