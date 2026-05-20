@@ -1092,9 +1092,20 @@
     }
 
     var oneLine = String(lastUser.content).replace(/\s+/g, ' ').trim();
-    $bar.removeClass('hidden').attr('title', oneLine);
+    $bar.removeClass('hidden').attr('title', oneLine).css('cursor', 'pointer');
     $bar.find('.last-request-text').text(oneLine);
   }
+
+  $(document).on('click', '#last-request-bar', function() {
+    var $msgs = $('#conversation-container').find('.conversation-message[data-msg-type="user"]');
+    if (!$msgs.length) return;
+    var $target = $msgs.last();
+    var container = document.getElementById('conversation-container');
+    if (!container) return;
+    container.scrollTo({ top: $target[0].offsetTop - container.offsetTop - 8, behavior: 'smooth' });
+    $target.addClass('msg-highlight');
+    setTimeout(function() { $target.removeClass('msg-highlight'); }, 1800);
+  });
 
   function scrollConversationToBottom() {
     if (state.agentOutputScrollLock) {
@@ -2801,6 +2812,76 @@
       // Reset input so same file can be selected again
       $(this).val('');
     });
+
+    // Voice input button handler
+    (function() {
+      var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        $('#btn-voice-input').attr('title', 'Voice input not supported in this browser').css('opacity', '0.4');
+        return;
+      }
+
+      var recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = navigator.language || 'ko-KR';
+
+      var isListening = false;
+      var baseText = '';
+
+      recognition.onstart = function() {
+        isListening = true;
+        baseText = $('#input-message').val();
+        if (baseText && !baseText.endsWith(' ')) baseText += ' ';
+        $('#btn-voice-input')
+          .addClass('text-red-400 voice-listening')
+          .removeClass('text-gray-500 hover:text-gray-300')
+          .attr('title', 'Stop voice input');
+      };
+
+      recognition.onresult = function(e) {
+        var interim = '';
+        var finalText = '';
+        for (var i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) {
+            finalText += e.results[i][0].transcript;
+          } else {
+            interim += e.results[i][0].transcript;
+          }
+        }
+        if (finalText) baseText += finalText;
+        var $input = $('#input-message');
+        $input.val(baseText + interim);
+        $input[0].dispatchEvent(new Event('input'));
+        $input[0].scrollTop = $input[0].scrollHeight;
+      };
+
+      recognition.onerror = function(e) {
+        if (e.error === 'not-allowed') {
+          showToast('마이크 권한이 필요합니다. 브라우저 주소창의 권한 설정을 확인하세요.', 'error');
+        } else if (e.error === 'network') {
+          showToast('음성 인식에 인터넷 연결이 필요합니다.', 'error');
+        } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          console.warn('Speech recognition error:', e.error);
+        }
+      };
+
+      recognition.onend = function() {
+        isListening = false;
+        $('#btn-voice-input')
+          .removeClass('text-red-400 voice-listening')
+          .addClass('text-gray-500 hover:text-gray-300')
+          .attr('title', 'Voice input');
+      };
+
+      $(document).on('click', '#btn-voice-input', function() {
+        if (isListening) {
+          recognition.stop();
+        } else {
+          recognition.start();
+        }
+      });
+    })();
 
     // Permission button click handler
     $(document).on('click', '.permission-btn', function() {

@@ -113,6 +113,11 @@ html, body {
   background: rgba(17, 24, 39, 0.96);
   border-bottom: 1px solid rgb(55 65 81);
   font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#last-request-bar:hover {
+  background: rgba(31, 41, 55, 0.98);
 }
 /* Shift last-request-bar down when conversation-name-bar is visible */
 #conversation-name-bar:not(.hidden) ~ #last-request-bar {
@@ -3339,4 +3344,24 @@ body {
     opacity: 0.8;
     box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.5);
   }
+}
+
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.voice-listening {
+  animation: voice-pulse 1s ease-in-out infinite;
+}
+
+@keyframes msg-highlight-fade {
+  0%   { outline-color: rgba(139, 92, 246, 0.9); }
+  60%  { outline-color: rgba(139, 92, 246, 0.5); }
+  100% { outline-color: transparent; }
+}
+.msg-highlight {
+  animation: msg-highlight-fade 1.8s ease-out forwards;
+  outline: 2px solid transparent;
+  border-radius: 6px;
 }
