@@ -17,6 +17,7 @@ describe('StreamHandler', () => {
   let waitingStatuses: WaitingStatus[];
   let contextUsages: ContextUsage[];
   let errors: Error[];
+  let sessionIds: string[];
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -26,11 +27,13 @@ describe('StreamHandler', () => {
     waitingStatuses = [];
     contextUsages = [];
     errors = [];
+    sessionIds = [];
 
     handler.on('message', (msg: AgentMessage) => messages.push(msg));
     handler.on('waitingForInput', (status: WaitingStatus) => waitingStatuses.push(status));
     handler.on('contextUsage', (usage: ContextUsage) => contextUsages.push(usage));
     handler.on('error', (err: Error) => errors.push(err));
+    handler.on('sessionId', (id: string) => sessionIds.push(id));
   });
 
   describe('processLine', () => {
@@ -69,16 +72,15 @@ describe('StreamHandler', () => {
   });
 
   describe('system events', () => {
-    it('should emit system message on init with session ID', () => {
+    it('should emit sessionId event on init with session ID (no user-facing message)', () => {
       handler.processLine(JSON.stringify({
         type: 'system',
         subtype: 'init',
         session_id: 'sess-abc',
       }));
 
-      expect(messages).toHaveLength(1);
-      expect(messages[0]!.type).toBe('system');
-      expect(messages[0]!.content).toContain('sess-abc');
+      expect(messages).toHaveLength(0);
+      expect(sessionIds).toEqual(['sess-abc']);
     });
 
     it('should handle init without session ID', () => {
@@ -87,8 +89,9 @@ describe('StreamHandler', () => {
         subtype: 'init',
       }));
 
-      // No system message emitted without session ID
+      // No message and no sessionId event without a session ID
       expect(messages).toHaveLength(0);
+      expect(sessionIds).toHaveLength(0);
     });
 
     it('should handle status compacting', () => {

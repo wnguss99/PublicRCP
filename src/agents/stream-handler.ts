@@ -68,6 +68,7 @@ export interface StreamHandlerEvents {
   sessionNotFound: (sessionId: string) => void;
   permissionRequest: (request: PermissionRequest) => void;
   exitPlanMode: (planContent: string) => void;
+  sessionId: (sessionId: string) => void;
 }
 
 /**
@@ -221,13 +222,9 @@ export class StreamHandler extends EventEmitter {
         // Reset tracking for new session
         this.resetEmittedTracking();
 
-        // Emit a system message with the session ID so the agent can capture it
+        // Hand the session ID to the agent via an event (no user-facing message).
         if (cliEvent.session_id) {
-          this.emitMessage({
-            type: 'system',
-            content: `Session ID: ${cliEvent.session_id}`,
-            timestamp: new Date().toISOString(),
-          });
+          this.emit('sessionId', cliEvent.session_id);
         }
         break;
       case 'status':

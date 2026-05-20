@@ -393,20 +393,19 @@ export class ClaudeBinary implements Agent {
         this._collectedOutput += message.content;
       }
 
-      // Extract session ID from messages
-      const sessionId = MessageBuilder.extractSessionId(message.content);
-
-      if (sessionId && !this._sessionId) {
-        this._sessionId = sessionId;
-        this.logger.info('Session ID detected', { sessionId });
-      }
-
       // Check if agent is ready
       if (MessageBuilder.isReadyMessage(message.content)) {
         this.processNextQueuedInput();
       }
 
       this.emitMessage(message);
+    });
+
+    this.streamHandler.on('sessionId', (sessionId: string) => {
+      if (sessionId && !this._sessionId) {
+        this._sessionId = sessionId;
+        this.logger.info('Session ID detected', { sessionId });
+      }
     });
 
     this.streamHandler.on('waitingForInput', (status: WaitingStatus) => {

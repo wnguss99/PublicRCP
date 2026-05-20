@@ -416,24 +416,6 @@ describe('MessageBuilder', () => {
     });
   });
 
-  describe('extractSessionId', () => {
-    it('should extract from "Session ID:" pattern', () => {
-      expect(MessageBuilder.extractSessionId('Session ID: abc-123')).toBe('abc-123');
-    });
-
-    it('should extract from "Resuming session:" pattern', () => {
-      expect(MessageBuilder.extractSessionId('Resuming session: def-456')).toBe('def-456');
-    });
-
-    it('should extract from "Created new session:" pattern', () => {
-      expect(MessageBuilder.extractSessionId('Created new session: ghi-789')).toBe('ghi-789');
-    });
-
-    it('should return null when no match', () => {
-      expect(MessageBuilder.extractSessionId('No session info here')).toBeNull();
-    });
-  });
-
   describe('isReadyMessage', () => {
     it('should match "Ready."', () => {
       expect(MessageBuilder.isReadyMessage('Ready.')).toBe(true);

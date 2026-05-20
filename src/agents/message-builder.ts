@@ -253,27 +253,6 @@ export class MessageBuilder {
   }
 
   /**
-   * Extract session ID from a message.
-   * Looks for patterns like "Session ID: xxx" or "Resuming session: xxx"
-   */
-  static extractSessionId(message: string): string | null {
-    const patterns = [
-      /Session ID: ([a-zA-Z0-9-]+)/i,
-      /Resuming session: ([a-zA-Z0-9-]+)/i,
-      /Created new session: ([a-zA-Z0-9-]+)/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = message.match(pattern);
-      if (match?.[1]) {
-        return match[1];
-      }
-    }
-
-    return null;
-  }
-
-  /**
    * Check if a message indicates the agent is ready.
    */
   static isReadyMessage(message: string): boolean {
