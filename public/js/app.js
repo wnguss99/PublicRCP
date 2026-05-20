@@ -3368,8 +3368,11 @@
     if (!message && !hasImages) return;
 
     // On touch devices, dismiss the on-screen keyboard once a message is committed.
-    if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    if (isTouchDevice) {
+      $input[0].readOnly = true;
       $input.blur();
+      document.activeElement && document.activeElement.blur();
     }
 
     // All messages (including slash commands) are sent to Claude agent
@@ -3413,8 +3416,13 @@
       renderProjectList();
     }
 
-    // Disable input while sending
-    $input.prop('disabled', true);
+    // Disable input while sending (on mobile, use readOnly to avoid disabled→enabled focus restore)
+    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    if (isTouchDevice) {
+      $input[0].readOnly = true;
+    } else {
+      $input.prop('disabled', true);
+    }
     $('#btn-send-message').prop('disabled', true);
 
     // Build user message with images
@@ -3449,13 +3457,8 @@
       .always(function() {
         state.messageSending = false;
         $('#btn-send-message').prop('disabled', false);
-        if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
-          $input.blur();
-          $input.prop('disabled', false);
-          setTimeout(function() {
-            $input.blur();
-            if (document.activeElement) document.activeElement.blur();
-          }, 100);
+        if (isTouchDevice) {
+          $input[0].readOnly = false;
         } else {
           $input.prop('disabled', false);
           $input.focus();
@@ -3491,8 +3494,13 @@
       renderProjectList();
     }
 
-    // Disable input while starting
-    $input.prop('disabled', true);
+    // Disable input while starting (on mobile, use readOnly to avoid disabled→enabled focus restore)
+    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    if (isTouchDevice) {
+      $input[0].readOnly = true;
+    } else {
+      $input.prop('disabled', true);
+    }
     $('#btn-send-message').prop('disabled', true);
     showContentLoading(sessionId ? 'Resuming session...' : 'Starting agent...');
 
@@ -3553,13 +3561,8 @@
         if (state.selectedProjectId === projectId) {
           hideContentLoading();
           $('#btn-send-message').prop('disabled', false);
-          if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
-            $input.blur();
-            $input.prop('disabled', false);
-            setTimeout(function() {
-              $input.blur();
-              if (document.activeElement) document.activeElement.blur();
-            }, 100);
+          if (isTouchDevice) {
+            $input[0].readOnly = false;
           } else {
             $input.prop('disabled', false);
             $input.focus();
