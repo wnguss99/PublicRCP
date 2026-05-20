@@ -76,7 +76,8 @@ export interface ProjectStatus {
   slackLinkedChannelId?: string | null;
   /** Agent profile ID override (null = use default profile) */
   agentProfileId?: string | null;
-  /** Inline approval mode: 'ask' surfaces tool requests in the UI, 'auto' uses static rules only. Default 'auto'. */
+  /** Inline approval mode: 'ask' surfaces tool requests in the UI, 'auto' uses static rules only.
+   *  Default (unset) is 'ask' for interactive agents; Ralph Loop / one-off agents keep 'auto'. */
   approvalMode?: 'ask' | 'auto';
   createdAt: string;
   updatedAt: string;

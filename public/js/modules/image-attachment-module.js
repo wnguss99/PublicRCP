@@ -198,26 +198,6 @@
   }
 
   /**
-   * Show waiting indicator in conversation
-   */
-  function showWaitingIndicator() {
-    removeWaitingIndicator(); // Remove any existing one first
-    var html = '<div id="waiting-indicator" class="flex items-center gap-2 text-gray-400 text-sm py-2">' +
-      '<div class="loading-spinner small"></div>' +
-      '<span>Waiting for Claude response...</span>' +
-    '</div>';
-    $('#conversation').append(html);
-    scrollConversationToBottom();
-  }
-
-  /**
-   * Remove waiting indicator from conversation
-   */
-  function removeWaitingIndicator() {
-    $('#waiting-indicator').remove();
-  }
-
-  /**
    * Show full-size image in modal
    * @param {string} src - Image source URL
    */
@@ -291,8 +271,6 @@
     renderPreviews: renderPreviews,
     removeImage: removeImage,
     clearAll: clearAll,
-    showWaitingIndicator: showWaitingIndicator,
-    removeWaitingIndicator: removeWaitingIndicator,
     showModal: showModal,
     setupHandlers: setupHandlers
   };

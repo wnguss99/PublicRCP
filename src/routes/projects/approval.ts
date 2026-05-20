@@ -99,7 +99,7 @@ export function createApprovalRouter(deps: ProjectRouterDependencies): Router {
       res.status(404).json({ error: 'Project not found' });
       return;
     }
-    res.json({ mode: project.approvalMode ?? 'auto' });
+    res.json({ mode: project.approvalMode ?? 'ask' });
   });
 
   router.put('/mode', async (req: Request, res: Response) => {

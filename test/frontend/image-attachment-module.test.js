@@ -324,59 +324,6 @@ describe('ImageAttachmentModule', () => {
     });
   });
 
-  describe('showWaitingIndicator', () => {
-    it('should append waiting indicator to conversation', () => {
-      const mockConversation = global.$();
-
-      ImageAttachmentModule.showWaitingIndicator();
-
-      expect(global.$).toHaveBeenCalledWith('#conversation');
-      expect(mockConversation.append).toHaveBeenCalledWith(
-        expect.stringContaining('waiting-indicator')
-      );
-      expect(mockScrollConversationToBottom).toHaveBeenCalled();
-    });
-
-    it('should remove existing indicator first', () => {
-      const mockIndicator = {
-        remove: jest.fn()
-      };
-
-      global.$ = jest.fn((selector) => {
-        if (selector === '#waiting-indicator') {
-          return mockIndicator;
-        }
-
-        return createMockJQuery()();
-      });
-
-      ImageAttachmentModule.showWaitingIndicator();
-
-      expect(mockIndicator.remove).toHaveBeenCalled();
-    });
-  });
-
-  describe('removeWaitingIndicator', () => {
-    it('should remove waiting indicator element', () => {
-      const mockIndicator = {
-        remove: jest.fn()
-      };
-
-      global.$ = jest.fn((selector) => {
-        if (selector === '#waiting-indicator') {
-          return mockIndicator;
-        }
-
-        return createMockJQuery()();
-      });
-
-      ImageAttachmentModule.removeWaitingIndicator();
-
-      expect(global.$).toHaveBeenCalledWith('#waiting-indicator');
-      expect(mockIndicator.remove).toHaveBeenCalled();
-    });
-  });
-
   describe('showModal', () => {
     it('should create modal if not exists', () => {
       let callCount = 0;

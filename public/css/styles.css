@@ -72,10 +72,11 @@ html, body {
   min-height: 7rem;
 }
 
-/* Working indicator — VS Code-style pill floating at the top-left of the chat area. */
+/* Working indicator — VS Code-style pill floating at the bottom-left of the
+   chat area, just above the message input. */
 #agent-working-indicator {
   position: absolute;
-  top: 0.5rem;
+  bottom: 0.5rem;
   left: 0.5rem;
   z-index: 20;
   display: flex;
@@ -94,6 +95,11 @@ html, body {
 /* Re-enable clicks on the queued-messages button that gets injected here. */
 #agent-working-indicator button {
   pointer-events: auto;
+}
+/* While the indicator is visible, pad the chat scroll area so the last message
+   can scroll clear of the floating pill instead of being hidden behind it. */
+#conversation-container.has-working-indicator {
+  padding-bottom: 3.25rem;
 }
 
 /* Send / cancel buttons — larger by default so they're easy to click on desktop
@@ -182,6 +188,51 @@ html, body {
 /* Message type filter - hidden messages */
 .conversation-message.filter-hidden {
   display: none !important;
+}
+
+/* Copy-to-clipboard button on assistant answers */
+.conversation-message {
+  position: relative;
+}
+.msg-copy-btn {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgb(75 85 99);
+  border-radius: 5px;
+  background: rgba(31, 41, 55, 0.85);
+  color: #9ca3af;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.conversation-message:hover .msg-copy-btn {
+  opacity: 1;
+}
+.msg-copy-btn:hover {
+  color: #e5e7eb;
+  background: rgba(55, 65, 81, 0.95);
+}
+.msg-copy-btn .copy-icon-done {
+  display: none;
+}
+.msg-copy-btn.copied {
+  opacity: 1;
+  color: #4ade80;
+  border-color: #4ade80;
+}
+.msg-copy-btn.copied .copy-icon-default {
+  display: none;
+}
+.msg-copy-btn.copied .copy-icon-done {
+  display: block;
 }
 
 /* Plan content markdown styling */
@@ -1837,18 +1888,6 @@ body {
   box-shadow: 0 0 6px rgba(250, 204, 21, 0.6);
 }
 
-/* Waiting for input badge next to running status */
-.waiting-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  border-radius: 9999px;
-  background-color: rgba(250, 204, 21, 0.2);
-  color: #facc15;
-}
-
 /* Project card waiting state */
 .project-card.waiting-for-input {
   border-left: 3px solid #facc15;
@@ -1882,16 +1921,6 @@ body {
   50% {
     box-shadow: 0 0 8px 2px rgba(250, 204, 21, 0.3);
   }
-}
-
-/* Small waiting indicator for badges */
-.waiting-indicator-small {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: #facc15;
-  animation: waiting-pulse 0.8s ease-in-out infinite;
 }
 
 /* Folder browser */

@@ -1117,11 +1117,6 @@
         return;
       }
 
-      // Remove waiting indicator when response arrives (not for user messages)
-      if (message.type !== 'user') {
-        ImageAttachmentModule.removeWaitingIndicator();
-      }
-
       // Handle tool_result messages - update specific tool status
       if (message.type === 'tool_result' && message.toolInfo) {
         ToolRenderer.updateToolStatus(
@@ -2756,6 +2751,25 @@
       $btn.addClass('selected');
     });
 
+    // Copy assistant answer to clipboard
+    $(document).on('click', '.msg-copy-btn', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      var $btn = $(this);
+      var raw = '';
+      try {
+        raw = decodeURIComponent($btn.attr('data-raw') || '');
+      } catch (err) {
+        raw = $btn.attr('data-raw') || '';
+      }
+
+      copyTextToClipboard(raw, function() {
+        $btn.addClass('copied');
+        setTimeout(function() { $btn.removeClass('copied'); }, 1500);
+      });
+    });
+
     // Plan mode approve button handler
     $(document).on('click', '.plan-approve-btn', function() {
       var $btn = $(this);
@@ -3331,8 +3345,6 @@
     // Add user message to conversation
     appendMessage(state.selectedProjectId, userMessage);
 
-    // Show waiting indicator
-    ImageAttachmentModule.showWaitingIndicator();
     updateCancelButton();
 
     var isPlanFeedback = state.planFeedbackPending;
@@ -3345,7 +3357,6 @@
       })
       .fail(function(xhr) {
         showErrorToast(xhr, 'Failed to send message');
-        ImageAttachmentModule.removeWaitingIndicator();
       })
       .always(function() {
         state.messageSending = false;
@@ -3426,10 +3437,9 @@
         // Add user message to conversation
         appendMessage(projectId, userMessage);
 
-        // Clear input and images, show waiting
+        // Clear input and images
         $input.val('').trigger('input');
         ImageAttachmentModule.clearAll();
-        ImageAttachmentModule.showWaitingIndicator();
         updateInputArea();
         updateCancelButton();
       })
@@ -3738,11 +3748,18 @@
           if (serverVersion > projectVersion || serverVersion === 0) {
             project.waitingVersion = serverVersion;
             project.isWaitingForInput = data.isWaitingForInput;
-            updateWaitingIndicator(data.isWaitingForInput);
 
             // Update global state
             if (serverVersion > state.waitingVersion) {
               state.waitingVersion = serverVersion;
+            }
+
+            // Sync the working indicator only with this fresher status. Doing it
+            // unconditionally would let a stale poll (server reports isWaiting=false
+            // for ~3s after a turn ends) override the accurate WebSocket turn-end
+            // signal and restart the verb animation.
+            if (projectId === state.selectedProjectId) {
+              AgentControlsModule.setAgentWaiting(data.isWaitingForInput);
             }
           }
         }
@@ -3751,7 +3768,6 @@
           state.currentAgentMode = data.mode;
           state.queuedMessageCount = data.queuedMessageCount || 0;
           showAgentRunningIndicator(true);
-          AgentControlsModule.setAgentWaiting(!!data.isWaitingForInput);
           updateQueuedMessagesDisplay();
           startAgentStatusPolling(projectId); // Start polling as fallback
         } else {
@@ -4122,6 +4138,43 @@
 
   function findProjectById(id) {
     return state.projects.find(function(p) { return p.id === id; });
+  }
+
+  /**
+   * Copy text to the clipboard. Uses the async Clipboard API when available
+   * (https/localhost), falling back to a hidden textarea + execCommand so it
+   * still works when Claudito is served over plain HTTP on a LAN.
+   */
+  function copyTextToClipboard(text, onSuccess) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch (err) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      if (ok) {
+        if (onSuccess) onSuccess();
+      } else {
+        showToast('Failed to copy', 'error');
+      }
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() {
+        if (onSuccess) onSuccess();
+      }).catch(fallback);
+    } else {
+      fallback();
+    }
   }
 
   function updateApprovalModeButtons(mode) {
@@ -4672,7 +4725,6 @@
               renderProjectList();
 
               if (state.selectedProjectId === projectId) {
-                updateWaitingIndicator(response.isWaitingForInput);
                 updateCancelButton();
 
                 if (response.isWaitingForInput) {
@@ -5518,7 +5570,6 @@
       if (state.selectedProjectId === projectId) {
         // Also update global state for selected project
         state.waitingVersion = serverVersion;
-        updateWaitingIndicator(isWaiting);
         AgentControlsModule.setAgentWaiting(isWaiting);
         updateCancelButton();
 
@@ -5532,20 +5583,6 @@
       if (isWaiting && state.settings && state.settings.enableDesktopNotifications) {
         sendWaitingNotification(project);
       }
-    }
-  }
-
-  function updateWaitingIndicator(isWaiting) {
-    var $statusBadge = $('#project-status');
-    var $waitingBadge = $('#waiting-badge');
-
-    if (isWaiting) {
-      // Add waiting badge if it doesn't exist
-      if ($waitingBadge.length === 0) {
-        $statusBadge.after('<span id="waiting-badge" class="waiting-badge ml-2 flex items-center gap-1"><span class="waiting-indicator-small"></span>Waiting for user input</span>');
-      }
-    } else {
-      $waitingBadge.remove();
     }
   }
 
@@ -5603,7 +5640,6 @@
 
       if (project && project.isWaitingForInput) {
         project.isWaitingForInput = false;
-        updateWaitingIndicator(false);
         renderProjectList();
       }
     }
@@ -5690,7 +5726,6 @@
         var serverVersion = fullStatus.waitingVersion || 0;
 
         if (serverVersion > state.waitingVersion || serverVersion === 0) {
-          updateWaitingIndicator(fullStatus.isWaitingForInput);
           state.waitingVersion = serverVersion;
         }
       }
@@ -5708,7 +5743,6 @@
       // updateInputArea() is redundant after setPromptBlockingState(null) but kept
       // as a safety net for any other disabling paths (e.g. isModeSwitching).
       updateInputArea();
-      updateWaitingIndicator(false);
 
       // Clear pending permission mode change when agent stops
       state.pendingPermissionMode = null;

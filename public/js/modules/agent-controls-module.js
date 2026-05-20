@@ -96,11 +96,13 @@
       container.addClass('hidden');
       spinner.addClass('hidden');
       label.addClass('hidden');
+      $('#conversation-container').removeClass('has-working-indicator');
       return;
     }
 
     container.removeClass('hidden');
     label.removeClass('hidden');
+    $('#conversation-container').addClass('has-working-indicator');
 
     if (ralphStatusText) {
       stopWorkingAnimation();
@@ -137,10 +139,19 @@
     renderWorkingLabel();
   }
 
+  function formatElapsed(totalSeconds) {
+    if (totalSeconds < 60) {
+      return totalSeconds + 's';
+    }
+    var minutes = Math.floor(totalSeconds / 60);
+    var seconds = totalSeconds % 60;
+    return minutes + 'm' + seconds + 's';
+  }
+
   function renderWorkingLabel() {
     var elapsed = Math.floor((Date.now() - workingStartTime) / 1000);
     var verb = WORKING_VERBS[workingVerbIndex];
-    $('#agent-status-label').text(verb + '… ' + elapsed + 's');
+    $('#agent-status-label').text(verb + '… ' + formatElapsed(elapsed));
   }
 
   function stopWorkingAnimation() {

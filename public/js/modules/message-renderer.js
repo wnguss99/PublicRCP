@@ -407,7 +407,14 @@
       senderName = msg.ralphLoopPhase === 'worker' ? 'Worker' : 'Reviewer';
     }
 
+    // encodeURIComponent keeps the raw markdown intact (quotes, newlines) inside the attribute.
+    var encodedRaw = encodeURIComponent(msg.content || '');
+
     return '<div class="conversation-message ' + typeClass + ' markdown-content" data-msg-type="assistant">' +
+      '<button class="msg-copy-btn" type="button" data-raw="' + encodedRaw + '" title="Copy to clipboard" aria-label="Copy answer">' +
+      getCopyIcon() +
+      getCheckIcon() +
+      '</button>' +
       '<div class="message-header claude-header">' +
       getClaudeIcon() +
       '<span class="message-sender">' + senderName + '</span>' +
@@ -415,6 +422,25 @@
       '</div>' +
       '<div class="message-content">' + renderedContent + '</div>' +
       '</div>';
+  }
+
+  /**
+   * Clipboard icon shown on the copy button (default state).
+   */
+  function getCopyIcon() {
+    return '<svg class="copy-icon-default" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" ' +
+      'd="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>' +
+      '</svg>';
+  }
+
+  /**
+   * Check icon shown briefly after a successful copy.
+   */
+  function getCheckIcon() {
+    return '<svg class="copy-icon-done" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>' +
+      '</svg>';
   }
 
   /**

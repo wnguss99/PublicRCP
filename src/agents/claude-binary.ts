@@ -84,7 +84,10 @@ export class ClaudeBinary implements Agent {
   private _lastCommand: string | null = null;
   private _collectedOutput: string = '';
   private lineBuffer: string = '';
-  private lastActivityTimestamp = 0;
+  // Explicit turn-end flag. Set true when the CLI emits a `result` event (turn done),
+  // false when a new message is sent. Replaces the old 3s-inactivity heuristic, which
+  // briefly reported isWaiting=false after a turn ended and raced with WebSocket events.
+  private _isWaitingForInput = false;
   private inputQueue: string[] = [];
   private _waitingVersion = 0;
   private _sessionId: string | null = null;
@@ -345,6 +348,7 @@ export class ClaudeBinary implements Agent {
     const success = this.processManager.sendInput(messageToSend);
 
     if (success) {
+      this._isWaitingForInput = false;
       this._waitingVersion++;
       this.emitter.emit('waitingForInput', {
         isWaiting: false,
@@ -379,8 +383,6 @@ export class ClaudeBinary implements Agent {
   private setupHandlers(): void {
     // Forward stream handler events
     this.streamHandler.on('message', (message: AgentMessage) => {
-      this.lastActivityTimestamp = Date.now();
-
       // Apply ralph loop phase if set
       if (this._ralphLoopPhase && message.type === 'stdout') {
         message.ralphLoopPhase = this._ralphLoopPhase;
@@ -408,6 +410,7 @@ export class ClaudeBinary implements Agent {
     });
 
     this.streamHandler.on('waitingForInput', (status: WaitingStatus) => {
+      this._isWaitingForInput = status.isWaiting;
       this._waitingVersion = status.version;
       this.emitter.emit('waitingForInput', status);
     });
@@ -595,6 +598,7 @@ export class ClaudeBinary implements Agent {
       // Emitting it again would cause duplicate display
 
       // Update waiting status
+      this._isWaitingForInput = false;
       this._waitingVersion++;
       this.emitter.emit('waitingForInput', {
         isWaiting: false,
@@ -660,9 +664,8 @@ export class ClaudeBinary implements Agent {
   }
 
   private getWaitingStatus(): WaitingStatus {
-    const recentActivity = (Date.now() - this.lastActivityTimestamp) < 3000;
     return {
-      isWaiting: this.mode === 'interactive' && this._status === 'running' && !recentActivity,
+      isWaiting: this.mode === 'interactive' && this._status === 'running' && this._isWaitingForInput,
       version: this._waitingVersion,
     };
   }
@@ -681,7 +684,7 @@ export class ClaudeBinary implements Agent {
   private reset(): void {
     this._collectedOutput = '';
     this.lineBuffer = '';
-    this.lastActivityTimestamp = 0;
+    this._isWaitingForInput = false;
     this.inputQueue = [];
     this._sessionError = null;
     this.answeredToolIds.clear();

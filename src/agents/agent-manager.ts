@@ -297,6 +297,11 @@ export class DefaultAgentManager implements AgentManager {
   };
   private waitingVersions: Map<string, number> = new Map();
   private oneOffWaitingVersions: Map<string, number> = new Map();
+  // Monotonic per-project counter — the single source of truth for waitingForInput
+  // versions. Underlying agents and ExitPlanMode each had independent counters that
+  // could collide; the client drops any event whose version is not strictly newer.
+  // Never reset, so versions stay strictly increasing across sessions.
+  private readonly waitingVersionCounter: Map<string, number> = new Map();
   private readonly recentCommands: Map<string, CommandEntry[]> = new Map();
   private readonly oneOffCommandHistory: Map<string, OneOffCommandEntry[]> = new Map();
   private readonly cliCommandHistory: Map<string, OneOffCommandEntry[]> = new Map();
@@ -517,7 +522,7 @@ export class DefaultAgentManager implements AgentManager {
       chromeEnabled: settings.chromeEnabled ?? false,
       processSpawner: dockerResult.processSpawner,
       agentProfile,
-      approvalMode: project.approvalMode ?? 'auto',
+      approvalMode: project.approvalMode ?? 'ask',
       permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
     });
 
@@ -711,6 +716,13 @@ export class DefaultAgentManager implements AgentManager {
 
   getWaitingVersion(projectId: string): number {
     return this.waitingVersions.get(projectId) || 0;
+  }
+
+  /** Allocate the next strictly-increasing waitingForInput version for a project. */
+  private nextWaitingVersion(projectId: string): number {
+    const next = (this.waitingVersionCounter.get(projectId) || 0) + 1;
+    this.waitingVersionCounter.set(projectId, next);
+    return next;
   }
 
   getResourceStatus(): AgentResourceStatus {
@@ -1319,7 +1331,7 @@ export class DefaultAgentManager implements AgentManager {
       chromeEnabled: settings.chromeEnabled ?? false,
       processSpawner: dockerResult.processSpawner,
       agentProfile,
-      approvalMode: project.approvalMode ?? 'auto',
+      approvalMode: project.approvalMode ?? 'ask',
       permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
     });
 
@@ -1452,12 +1464,16 @@ export class DefaultAgentManager implements AgentManager {
     };
 
     const waitingListener = (status: WaitingStatus): void => {
-      // Store the waiting version
-      if (status.isWaiting) {
-        this.waitingVersions.set(projectId, status.version);
+      // Re-issue the version from the single per-project counter. Underlying
+      // agents emit versions from their own counters, which can collide.
+      const version = this.nextWaitingVersion(projectId);
+      const normalized: WaitingStatus = { ...status, version };
+
+      if (normalized.isWaiting) {
+        this.waitingVersions.set(projectId, version);
       }
 
-      this.emit('waitingForInput', projectId, status);
+      this.emit('waitingForInput', projectId, normalized);
     };
 
     const exitListener = (code: number | null): void => {
@@ -1593,8 +1609,9 @@ export class DefaultAgentManager implements AgentManager {
       });
     }
 
-    // Mark agent as waiting for input
-    const waitingVersion = Date.now();
+    // Mark agent as waiting for input — use the shared monotonic counter so this
+    // version stays consistent with the ones emitted by waitingListener.
+    const waitingVersion = this.nextWaitingVersion(projectId);
     this.waitingVersions.set(projectId, waitingVersion);
 
     this.emit('waitingForInput', projectId, { isWaiting: true, version: waitingVersion });
