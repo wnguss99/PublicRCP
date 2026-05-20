@@ -2444,12 +2444,9 @@
       sendMessage();
     });
 
-    // On mobile, block input refocus for a short period after sending
-    $('#input-message').on('focusin', function() {
-      if (state._blockInputFocus) {
-        $(this).blur();
-        return false;
-      }
+    // On mobile, restore inputmode when user taps the input area to type again
+    $('#input-message').on('touchstart', function() {
+      $(this).removeAttr('inputmode');
     });
 
     // New conversation button - show confirmation dialog
@@ -3375,15 +3372,13 @@
 
     if (!message && !hasImages) return;
 
-    // On touch devices, dismiss the on-screen keyboard and block refocus for 1s.
-    // Multiple code paths (updateInputArea, setPromptBlockingState, AJAX callbacks)
-    // can re-enable/re-focus the input after send, so we use a focusin guard.
+    // On touch devices, suppress the virtual keyboard by setting inputmode="none".
+    // This prevents the keyboard from appearing even if other code paths refocus the input.
+    // The attribute is removed on the next touchstart so the user can tap to type again.
     var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
     if (isTouchDevice) {
+      $input.attr('inputmode', 'none');
       $input.blur();
-      document.activeElement && document.activeElement.blur();
-      state._blockInputFocus = true;
-      setTimeout(function() { state._blockInputFocus = false; }, 1000);
     }
 
     // All messages (including slash commands) are sent to Claude agent
@@ -3464,7 +3459,7 @@
         state.messageSending = false;
         $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
-        if (!state._blockInputFocus) {
+        if (!isTouchDevice) {
           $input.focus();
         }
       });
@@ -3499,6 +3494,7 @@
     }
 
     // Disable input while starting
+    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
     $input.prop('disabled', true);
     $('#btn-send-message').prop('disabled', true);
     showContentLoading(sessionId ? 'Resuming session...' : 'Starting agent...');
@@ -3561,7 +3557,7 @@
           hideContentLoading();
           $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
-          if (!state._blockInputFocus) {
+          if (!isTouchDevice) {
             $input.focus();
           }
         }
