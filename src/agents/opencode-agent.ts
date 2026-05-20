@@ -19,7 +19,7 @@ import {
   ContextUsage,
   ProcessInfo,
 } from './types';
-import { AgentProfile } from '../repositories/settings';
+import { AgentProfile, McpServerConfig } from '../repositories/settings';
 
 export interface OpencodeAgentConfig {
   projectId: string;
@@ -33,6 +33,14 @@ export interface OpencodeAgentConfig {
   isNewSession?: boolean;
   model?: string;
   agentProfile?: AgentProfile;
+  /** Inline approval mode — accepted for type compatibility; opencode ignores it. */
+  approvalMode?: 'ask' | 'auto';
+  /** MCP permission server URL — accepted for type compatibility; opencode ignores it. */
+  permissionMcpBaseUrl?: string;
+  /** MCP servers — accepted for type compatibility; opencode ignores it. */
+  mcpServers?: McpServerConfig[];
+  /** Chrome flag — accepted for type compatibility; opencode ignores it. */
+  chromeEnabled?: boolean;
 }
 
 /**

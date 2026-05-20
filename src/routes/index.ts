@@ -49,10 +49,12 @@ import { ProjectDiscoveryService, DefaultProjectDiscoveryService } from '../serv
 import { AuthService } from '../services/auth-service';
 import { parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import packageJson from '../../package.json';
+import { ApprovalCoordinator, createPermissionMcpRouter } from '../services/permission-prompt';
 
 const frontendLogger = getLogger('frontend');
 
 let sharedAgentManager: AgentManager | null = null;
+let sharedApprovalCoordinator: ApprovalCoordinator | null = null;
 let sharedRoadmapGenerator: RoadmapGenerator | null = null;
 let sharedShellService: ShellService | null = null;
 let sharedRalphLoopService: RalphLoopService | null = null;
@@ -82,6 +84,9 @@ export interface ApiRouterDependencies {
   shellEnabled?: boolean;
   onShutdown?: () => void;
   authService?: AuthService;
+  /** Host:port the HTTP server is bound to — used to build the MCP permission server URL. */
+  serverHost?: string;
+  serverPort?: number;
 }
 
 export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
@@ -113,6 +118,17 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
   const dockerService = getOrCreateDockerService();
   const containerManager = getOrCreateContainerManager(dockerService, settingsRepository);
 
+  // Approval coordinator + MCP permission server (must exist before AgentManager so the URL is known)
+  const approvalCoordinator = getApprovalCoordinator();
+  const mcpPort = deps.serverPort ?? Number(process.env.PORT) ?? 3000;
+  // Claude CLI runs on the same host as Claudito, so loopback is always reachable.
+  const permissionMcpBaseUrl = `http://127.0.0.1:${mcpPort}/api/mcp/permission`;
+
+  router.use('/mcp/permission', createPermissionMcpRouter({
+    coordinator: approvalCoordinator,
+    resolveProjectId: (req) => req.params['projectId'] || null,
+  }));
+
   // Agent Manager (singleton for WebSocket integration)
   const agentManager = deps.agentManager || getOrCreateAgentManager({
     projectRepository,
@@ -122,6 +138,8 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     roadmapParser,
     containerManager,
     maxConcurrentAgents: deps.maxConcurrentAgents,
+    permissionMcpBaseUrl,
+    approvalCoordinator,
   });
 
   // Slack notification service (subscribes to agent events)
@@ -372,6 +390,7 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     runProcessManager,
     runConfigImportService,
     inventifyService,
+    approvalCoordinator,
   }));
 
   // Connect Slack Socket Mode on startup (no-op if not configured)
@@ -390,6 +409,8 @@ interface AgentManagerConfig {
   roadmapParser: MarkdownRoadmapParser;
   containerManager?: ContainerManager;
   maxConcurrentAgents?: number;
+  permissionMcpBaseUrl?: string;
+  approvalCoordinator?: ApprovalCoordinator;
 }
 
 function getOrCreateAgentManager(config: AgentManagerConfig): AgentManager {
@@ -402,10 +423,19 @@ function getOrCreateAgentManager(config: AgentManagerConfig): AgentManager {
       roadmapParser: config.roadmapParser,
       containerManager: config.containerManager,
       maxConcurrentAgents: config.maxConcurrentAgents,
+      permissionMcpBaseUrl: config.permissionMcpBaseUrl,
+      approvalCoordinator: config.approvalCoordinator,
     });
   }
 
   return sharedAgentManager;
+}
+
+export function getApprovalCoordinator(): ApprovalCoordinator {
+  if (!sharedApprovalCoordinator) {
+    sharedApprovalCoordinator = new ApprovalCoordinator();
+  }
+  return sharedApprovalCoordinator;
 }
 
 export function getAgentManager(): AgentManager | null {

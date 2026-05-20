@@ -3,7 +3,7 @@ import { Server, createServer } from 'http';
 import fs from 'fs';
 import path from 'path';
 import { AppConfig } from '../config';
-import { createApiRouter, getAgentManager, getRoadmapGenerator, getShellService, getRalphLoopService, getConversationRepository, getProjectRepository, setWebSocketServer, getRunProcessManager } from '../routes';
+import { createApiRouter, getAgentManager, getRoadmapGenerator, getShellService, getRalphLoopService, getConversationRepository, getProjectRepository, setWebSocketServer, getRunProcessManager, getApprovalCoordinator } from '../routes';
 import { createAuthRouter } from '../routes/auth';
 import { DefaultWebSocketServer, ProjectWebSocketServer } from '../websocket';
 import { createErrorHandler, formatAccessibleUrls } from '../utils';
@@ -26,6 +26,8 @@ export interface ExpressAppOptions {
   shellEnabled?: boolean;
   onShutdown?: () => void;
   authService?: AuthService;
+  serverHost?: string;
+  serverPort?: number;
 }
 
 export function createExpressApp(options: ExpressAppOptions = {}): Application {
@@ -84,6 +86,8 @@ export function createExpressApp(options: ExpressAppOptions = {}): Application {
     shellEnabled: options.shellEnabled,
     onShutdown: options.onShutdown,
     authService: options.authService,
+    serverHost: options.serverHost,
+    serverPort: options.serverPort,
   }));
 
   app.use(createErrorHandler());
@@ -132,6 +136,8 @@ export class ExpressHttpServer implements HttpServer {
       shellEnabled: this.config.shellEnabled,
       onShutdown: () => this.triggerShutdown(),
       authService: this.authService,
+      serverHost: this.config.host,
+      serverPort: this.config.port,
     });
   }
 
@@ -260,6 +266,7 @@ export class ExpressHttpServer implements HttpServer {
       runProcessManager: runProcessManager || undefined,
       conversationRepository: getConversationRepository() || undefined,
       projectRepository: getProjectRepository() || undefined,
+      approvalCoordinator: getApprovalCoordinator(),
     });
     this.wsServer.initialize(this.httpServer);
 

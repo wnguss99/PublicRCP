@@ -209,6 +209,10 @@ export interface AgentFactoryOptions {
   processSpawner?: ProcessSpawner;
   /** Resolved agent profile (provider + runtime config) */
   agentProfile?: AgentProfile;
+  /** Inline approval mode: 'ask' surfaces tool requests in the UI, 'auto' uses static rules only. */
+  approvalMode?: 'ask' | 'auto';
+  /** Base URL of the Claudito MCP permission server (passed through to ClaudeBinary). */
+  permissionMcpBaseUrl?: string;
 }
 
 export interface AgentFactory {
@@ -241,6 +245,10 @@ export interface AgentManagerDependencies {
   permissionGenerator?: PermissionGenerator;
   containerManager?: ContainerManager;
   maxConcurrentAgents?: number;
+  /** Base URL of Claudito's embedded MCP permission server (for inline approval UI). */
+  permissionMcpBaseUrl?: string;
+  /** Optional coordinator — when present, pending approvals are auto-denied on agent stop. */
+  approvalCoordinator?: import('../services/permission-prompt').ApprovalCoordinator;
 }
 
 type EventListeners = {
@@ -268,6 +276,8 @@ export class DefaultAgentManager implements AgentManager {
   private readonly agentFactory: AgentFactory;
   private readonly permissionGenerator: PermissionGenerator;
   private readonly containerManager: ContainerManager | null;
+  private readonly permissionMcpBaseUrl: string | null;
+  private readonly approvalCoordinator: import('../services/permission-prompt').ApprovalCoordinator | null;
   private readonly logger: Logger;
   private readonly pendingMessageSaves: Set<Promise<unknown>> = new Set();
   private readonly listeners: EventListeners = {
@@ -304,6 +314,8 @@ export class DefaultAgentManager implements AgentManager {
     permissionGenerator,
     containerManager,
     maxConcurrentAgents = 5,
+    permissionMcpBaseUrl,
+    approvalCoordinator,
   }: AgentManagerDependencies) {
     this.projectRepository = projectRepository;
     this.conversationRepository = conversationRepository;
@@ -313,6 +325,8 @@ export class DefaultAgentManager implements AgentManager {
     this.agentFactory = agentFactory;
     this.permissionGenerator = permissionGenerator || new DefaultPermissionGenerator();
     this.containerManager = containerManager || null;
+    this.permissionMcpBaseUrl = permissionMcpBaseUrl || null;
+    this.approvalCoordinator = approvalCoordinator || null;
     this._maxConcurrentAgents = maxConcurrentAgents;
     this.logger = getLogger('agent-manager');
 
@@ -503,6 +517,8 @@ export class DefaultAgentManager implements AgentManager {
       chromeEnabled: settings.chromeEnabled ?? false,
       processSpawner: dockerResult.processSpawner,
       agentProfile,
+      approvalMode: project.approvalMode ?? 'auto',
+      permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
     });
 
     this.agents.set(projectId, agent);
@@ -635,6 +651,10 @@ export class DefaultAgentManager implements AgentManager {
     this.processTracker.untrackProcess(projectId);
     this.waitingVersions.delete(projectId);
     this.queuedMessages.delete(projectId);
+    // Auto-deny any pending approval cards so the UI doesn't hang on stale prompts.
+    if (this.approvalCoordinator) {
+      this.approvalCoordinator.cancelProject(projectId, 'Agent stopped.');
+    }
   }
 
   async stopAllAgents(): Promise<void> {
@@ -1299,6 +1319,8 @@ export class DefaultAgentManager implements AgentManager {
       chromeEnabled: settings.chromeEnabled ?? false,
       processSpawner: dockerResult.processSpawner,
       agentProfile,
+      approvalMode: project.approvalMode ?? 'auto',
+      permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
     });
 
     this.agents.set(projectId, agent);

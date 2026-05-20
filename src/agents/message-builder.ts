@@ -54,6 +54,7 @@ export class MessageBuilder {
     env?: Record<string, string>;
     mcpConfigPath?: string;
     chromeEnabled?: boolean;
+    permissionPromptTool?: string;
   }): string[] {
     const args: string[] = ['--print'];
 
@@ -65,6 +66,10 @@ export class MessageBuilder {
     MessageBuilder.addPermissionArgs(args, options);
     MessageBuilder.addSessionArgs(args, options);
     MessageBuilder.addOutputArgs(args, options);
+
+    if (options.permissionPromptTool) {
+      args.push('--permission-prompt-tool', options.permissionPromptTool);
+    }
 
     return args;
   }

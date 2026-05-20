@@ -19,6 +19,7 @@ import { ConnectedClient } from '../../websocket/websocket-server';
 import { ProjectDiscoveryService } from '../../services/project-discovery';
 import { ClaudeOptimizationService, RunConfigurationService, RunConfigImportService, InventifyService } from '../../services';
 import { RunProcessManager } from '../../services/run-config/run-process-types';
+import { ApprovalCoordinator } from '../../services/permission-prompt';
 
 // Router dependencies interface
 export interface ProjectRouterDependencies {
@@ -41,6 +42,7 @@ export interface ProjectRouterDependencies {
   runProcessManager?: RunProcessManager;
   runConfigImportService?: RunConfigImportService;
   inventifyService?: InventifyService;
+  approvalCoordinator?: ApprovalCoordinator;
 }
 
 // Request body interfaces

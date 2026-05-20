@@ -205,9 +205,15 @@ export interface WebSocketMessage {
     | 'run_config_status'
     | 'docker_build_progress'
     | 'docker_fallback_warning'
+    | 'approval_request'
+    | 'approval_resolved'
 ;
   projectId?: string;
   data?: WebSocketMessageData | SessionRecoveryData | DockerFallbackWarningData;
+  // Approval event payload (only present for approval_* messages)
+  approval?: unknown;
+  requestId?: string;
+  decision?: unknown;
 }
 
 export interface DockerFallbackWarningData {
@@ -232,6 +238,7 @@ export interface WebSocketServerDependencies {
   runProcessManager?: RunProcessManager;
   conversationRepository?: ConversationRepository;
   projectRepository?: ProjectRepository;
+  approvalCoordinator?: import('../services/permission-prompt').ApprovalCoordinator;
 }
 
 export class DefaultWebSocketServer implements ProjectWebSocketServer {
@@ -245,6 +252,7 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
   private readonly runProcessManager?: RunProcessManager;
   private readonly conversationRepository?: ConversationRepository;
   private readonly projectRepository?: ProjectRepository;
+  private readonly approvalCoordinator?: import('../services/permission-prompt').ApprovalCoordinator;
   private readonly projectSubscriptions: Map<string, Set<WebSocket>> = new Map();
   private readonly logger: Logger;
   // Client registry for tracking connected clients
@@ -260,6 +268,7 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
     this.runProcessManager = deps.runProcessManager;
     this.conversationRepository = deps.conversationRepository;
     this.projectRepository = deps.projectRepository;
+    this.approvalCoordinator = deps.approvalCoordinator;
     this.logger = getLogger('websocket');
     this.setupAgentListeners();
     this.setupRoadmapListeners();
@@ -268,6 +277,26 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
     this.setupOneOffListeners();
     this.setupRunConfigListeners();
     this.setupLoggerListeners();
+    this.setupApprovalListeners();
+  }
+
+  private setupApprovalListeners(): void {
+    if (!this.approvalCoordinator) return;
+    this.approvalCoordinator.on('request', (pending) => {
+      this.broadcastToProject(pending.projectId, {
+        type: 'approval_request',
+        projectId: pending.projectId,
+        approval: pending,
+      } as WebSocketMessage);
+    });
+    this.approvalCoordinator.on('resolved', (requestId, projectId, decision) => {
+      this.broadcastToProject(projectId, {
+        type: 'approval_resolved',
+        projectId,
+        requestId,
+        decision,
+      } as WebSocketMessage);
+    });
   }
 
   initialize(httpServer: Server): void {

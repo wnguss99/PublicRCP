@@ -46,6 +46,10 @@ export interface ClaudeBinaryConfig {
   mcpServers?: McpServerConfig[];
   /** Enable Chrome browser usage */
   chromeEnabled?: boolean;
+  /** Inline approval mode: when 'ask', register Claudito's permission MCP server. */
+  approvalMode?: 'ask' | 'auto';
+  /** Base URL of the embedded Claudito MCP HTTP server (e.g. http://127.0.0.1:3000/api/mcp/permission). */
+  permissionMcpBaseUrl?: string;
 }
 
 export interface ClaudeBinaryStartOptions {
@@ -89,6 +93,8 @@ export class ClaudeBinary implements Agent {
   private readonly _model: string | undefined;
   private readonly _mcpServers: McpServerConfig[];
   private readonly _chromeEnabled: boolean;
+  private readonly _approvalMode: 'ask' | 'auto';
+  private readonly _permissionMcpBaseUrl: string | null;
   private _sessionError: string | null = null;
   private _ralphLoopPhase: 'worker' | 'reviewer' | undefined;
   private _mcpConfigPath: string | null = null;
@@ -110,6 +116,8 @@ export class ClaudeBinary implements Agent {
     this._model = config.model;
     this._mcpServers = config.mcpServers || [];
     this._chromeEnabled = config.chromeEnabled ?? false;
+    this._approvalMode = config.approvalMode ?? 'auto';
+    this._permissionMcpBaseUrl = config.permissionMcpBaseUrl ?? null;
 
     // Initialize process manager
     this.processManager = new ProcessManager(this.logger, config.processSpawner);
@@ -600,10 +608,26 @@ export class ClaudeBinary implements Agent {
       ? MessageBuilder.buildUserMessage(options.initialMessage, options.images)
       : undefined;
 
-    // Generate MCP config file if we have servers
-    if (this._mcpServers && this._mcpServers.length > 0) {
-      this._mcpConfigPath = MessageBuilder.generateMcpConfig(this._mcpServers, this.projectId);
+    const useApprovalUi = this._approvalMode === 'ask' && !!this._permissionMcpBaseUrl;
+    const extraMcpServers: McpServerConfig[] = useApprovalUi
+      ? [
+          {
+            name: 'claudito-approve',
+            type: 'http',
+            url: `${this._permissionMcpBaseUrl}/${this.projectId}`,
+            enabled: true,
+          } as McpServerConfig,
+        ]
+      : [];
+
+    const allMcp = [...(this._mcpServers || []), ...extraMcpServers];
+    if (allMcp.length > 0) {
+      this._mcpConfigPath = MessageBuilder.generateMcpConfig(allMcp, this.projectId);
     }
+
+    // When approval UI is on, do NOT skip permissions even if globally configured —
+    // the whole point is to surface tool requests to the user.
+    const skipPermissions = useApprovalUi ? false : this._permissions.skipPermissions;
 
     return MessageBuilder.buildArgs({
       mode: this._mode,
@@ -619,10 +643,11 @@ export class ClaudeBinary implements Agent {
       allowedTools: this._permissions.allowedTools,
       disallowedTools: this._permissions.disallowedTools,
       permissionMode: options.permissionMode || this._permissions.permissionMode,
-      skipPermissions: this._permissions.skipPermissions,
+      skipPermissions,
       message,
       mcpConfigPath: this._mcpConfigPath || undefined,
       chromeEnabled: this._chromeEnabled,
+      permissionPromptTool: useApprovalUi ? 'mcp__claudito-approve__approve' : undefined,
     });
   }
 

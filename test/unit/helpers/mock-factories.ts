@@ -436,6 +436,13 @@ export function createMockProjectRepository(
       project.updatedAt = new Date().toISOString();
       return Promise.resolve({ ...project });
     }),
+    updateApprovalMode: jest.fn().mockImplementation((id: string, mode: 'ask' | 'auto') => {
+      const project = projects.get(id);
+      if (!project) return Promise.resolve(null);
+      project.approvalMode = mode;
+      project.updatedAt = new Date().toISOString();
+      return Promise.resolve({ ...project });
+    }),
     // Extra method for path resolution
     getProjectPath: jest.fn().mockImplementation((id: string) => {
       const project = projects.get(id);

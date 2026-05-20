@@ -29,6 +29,20 @@ export interface AnthropicSdkAgentConfig {
   streaming?: AgentStreamingOptions;
   model?: string;
   agentProfile?: AgentProfile;
+  /** MCP servers — accepted for type compatibility; SDK agent ignores it. */
+  mcpServers?: import('../repositories/settings').McpServerConfig[];
+  /** Chrome flag — accepted for type compatibility; SDK agent ignores it. */
+  chromeEnabled?: boolean;
+  /** Inline approval mode — accepted for type compatibility; SDK agent ignores it. */
+  approvalMode?: 'ask' | 'auto';
+  /** MCP permission server URL — accepted for type compatibility; SDK agent ignores it. */
+  permissionMcpBaseUrl?: string;
+  /** Process spawner — accepted for type compatibility; SDK agent ignores it. */
+  processSpawner?: import('./process-manager').ProcessSpawner;
+  /** Session ID — accepted for type compatibility; SDK agent ignores it. */
+  sessionId?: string;
+  /** Is new session — accepted for type compatibility; SDK agent ignores it. */
+  isNewSession?: boolean;
 }
 
 interface ConversationMessage {

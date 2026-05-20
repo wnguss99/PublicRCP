@@ -2366,6 +2366,10 @@
 
     // Permission mode handlers are in PermissionModeModule.setupHandlers()
 
+    // Approval mode toggle handlers
+    $('#btn-approval-auto').on('click', function() { changeApprovalMode('auto'); });
+    $('#btn-approval-ask').on('click', function() { changeApprovalMode('ask'); });
+
     // Model selector handler
     $('#project-model-select').on('change', function() {
       handleProjectModelChange($(this).val() || null);
@@ -3657,6 +3661,14 @@
     // Restore per-project permission mode
     PermissionModeModule.onProjectChanged(projectId);
 
+    // Load per-project approval mode + rehydrate pending approvals
+    if (typeof ApprovalModule !== 'undefined') {
+      ApprovalModule.loadMode(projectId, function(mode) {
+        updateApprovalModeButtons(mode);
+      });
+      ApprovalModule.rehydrateForProject(projectId);
+    }
+
     // Restore input text for the new project
     var savedInput = state.projectInputs[projectId] || '';
     $('#input-message').val(savedInput).trigger('input');
@@ -4109,6 +4121,34 @@
 
   function findProjectById(id) {
     return state.projects.find(function(p) { return p.id === id; });
+  }
+
+  function updateApprovalModeButtons(mode) {
+    var $auto = $('#btn-approval-auto');
+    var $ask = $('#btn-approval-ask');
+    if (mode === 'ask') {
+      $auto.removeClass('perm-active');
+      $ask.addClass('perm-active');
+    } else {
+      $ask.removeClass('perm-active');
+      $auto.addClass('perm-active');
+    }
+  }
+
+  function changeApprovalMode(mode) {
+    if (!state.selectedProjectId) return;
+    if (typeof ApprovalModule === 'undefined') return;
+
+    var project = findProjectById(state.selectedProjectId);
+    var wasRunning = project && project.status === 'running';
+
+    ApprovalModule.setMode(state.selectedProjectId, mode, function(ok) {
+      if (!ok) return;
+      updateApprovalModeButtons(mode);
+      if (wasRunning) {
+        showToast('Approval mode applies to the next agent start (restart to apply now)', 'info');
+      }
+    });
   }
 
   function handleAddProject($form) {
@@ -5442,6 +5482,16 @@
           DockerModule.handleBuildProgress(message.data);
         }
         break;
+      case 'approval_request':
+        if (typeof ApprovalModule !== 'undefined') {
+          ApprovalModule.handleApprovalRequest(message);
+        }
+        break;
+      case 'approval_resolved':
+        if (typeof ApprovalModule !== 'undefined') {
+          ApprovalModule.handleApprovalResolved(message);
+        }
+        break;
     }
   }
 
@@ -6233,6 +6283,16 @@
       openModal: openModal,
       closeModal: closeModal
     });
+
+    if (typeof ApprovalModule !== 'undefined') {
+      ApprovalModule.init({
+        state: state,
+        api: api,
+        showToast: showToast,
+        showErrorToast: showErrorToast
+      });
+      ApprovalModule.bindHandlers();
+    }
 
     AgentControlsModule.init({
       state: state,

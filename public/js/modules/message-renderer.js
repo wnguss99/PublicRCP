@@ -108,6 +108,116 @@
   }
 
   /**
+   * Convert Unicode box-drawing ASCII tables (┌─┬─┐ … └─┴─┘) into Markdown tables
+   * so the existing marked.js GFM pipeline renders them as real HTML <table>s.
+   *
+   * Detection heuristic: a block that starts on a line beginning with `┌` and ends
+   * on a line containing `┘`, with `│`-delimited rows in between. Anything that
+   * doesn't parse cleanly is left untouched.
+   */
+  function convertAsciiTablesToMarkdown(content) {
+    if (!content || (content.indexOf('┌') === -1 && content.indexOf('╔') === -1)) {
+      return content;
+    }
+
+    var lines = content.split('\n');
+    var out = [];
+    var i = 0;
+
+    while (i < lines.length) {
+      var line = lines[i];
+      var trimmed = line.trim();
+      var isTopBorder = /^[┌╔].*[┐╗]\s*$/.test(trimmed);
+
+      if (!isTopBorder) {
+        out.push(line);
+        i++;
+        continue;
+      }
+
+      // Collect the box
+      var box = [trimmed];
+      var j = i + 1;
+      while (j < lines.length) {
+        var t = lines[j].trim();
+        box.push(t);
+        if (/^[└╚].*[┘╝]\s*$/.test(t)) {
+          break;
+        }
+        j++;
+      }
+
+      var converted = tryConvertBox(box);
+      if (converted) {
+        // Surround with blank lines so marked treats it as a fresh block
+        if (out.length && out[out.length - 1].trim() !== '') out.push('');
+        out.push(converted);
+        out.push('');
+        i = j + 1;
+      } else {
+        out.push(line);
+        i++;
+      }
+    }
+
+    return out.join('\n');
+  }
+
+  function tryConvertBox(box) {
+    if (box.length < 3) return null;
+
+    var rows = [];
+    var headerIdx = -1;
+
+    for (var k = 1; k < box.length - 1; k++) {
+      var ln = box[k];
+      if (/^[├╟].*[┤╢]\s*$/.test(ln)) {
+        // Header separator — the row before it was the header
+        if (rows.length > 0 && headerIdx === -1) {
+          headerIdx = rows.length - 1;
+        }
+        continue;
+      }
+      // Data row — must start and end with vertical bar
+      if (!/^[│║].*[│║]\s*$/.test(ln)) {
+        return null;
+      }
+      // Strip leading/trailing vertical bars then split on internal ones
+      var inner = ln.replace(/^[│║]/, '').replace(/[│║]\s*$/, '');
+      var cells = inner.split(/[│║]/).map(function(c) { return c.trim(); });
+      rows.push(cells);
+    }
+
+    if (rows.length === 0) return null;
+
+    // Normalize column count (use the max)
+    var colCount = rows.reduce(function(m, r) { return Math.max(m, r.length); }, 0);
+    rows = rows.map(function(r) {
+      while (r.length < colCount) r.push('');
+      return r;
+    });
+
+    // If no explicit header separator, treat the first row as the header.
+    if (headerIdx === -1) headerIdx = 0;
+
+    var header = rows[headerIdx];
+    var bodyRows = rows.slice(0, headerIdx).concat(rows.slice(headerIdx + 1));
+
+    var md = [];
+    md.push('| ' + header.map(escapeMdCell).join(' | ') + ' |');
+    md.push('| ' + header.map(function() { return '---'; }).join(' | ') + ' |');
+    for (var b = 0; b < bodyRows.length; b++) {
+      md.push('| ' + bodyRows[b].map(escapeMdCell).join(' | ') + ' |');
+    }
+    return md.join('\n');
+  }
+
+  function escapeMdCell(s) {
+    // Markdown cell values must not contain raw pipes; replace with escaped pipe.
+    return String(s == null ? '' : s).replace(/\|/g, '\\|');
+  }
+
+  /**
    * Render markdown content to HTML
    */
   function renderMarkdown(content) {
@@ -128,7 +238,8 @@
 
       marked.setOptions(options);
 
-      var html = marked.parse(content);
+      var preprocessed = convertAsciiTablesToMarkdown(content);
+      var html = marked.parse(preprocessed);
 
       // Schedule mermaid rendering after DOM update
       if (mermaid && html.includes('class="mermaid"')) {

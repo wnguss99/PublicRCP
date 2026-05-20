@@ -76,6 +76,8 @@ export interface ProjectStatus {
   slackLinkedChannelId?: string | null;
   /** Agent profile ID override (null = use default profile) */
   agentProfileId?: string | null;
+  /** Inline approval mode: 'ask' surfaces tool requests in the UI, 'auto' uses static rules only. Default 'auto'. */
+  approvalMode?: 'ask' | 'auto';
   createdAt: string;
   updatedAt: string;
 }
@@ -125,6 +127,7 @@ export interface ProjectRepository {
   updateSlackNotification(id: string, config: SlackNotificationConfig | null): Promise<ProjectStatus | null>;
   updateSlackLinkedChannel(id: string, channelId: string | null): Promise<ProjectStatus | null>;
   updateAgentProfileId(id: string, profileId: string | null): Promise<ProjectStatus | null>;
+  updateApprovalMode(id: string, mode: 'ask' | 'auto'): Promise<ProjectStatus | null>;
   updateProjectPath(id: string, newName: string, newPath: string): Promise<ProjectStatus | null>;
   delete(id: string): Promise<boolean>;
 }
@@ -567,6 +570,18 @@ export class FileProjectRepository implements ProjectRepository {
     }
 
     status.agentProfileId = profileId;
+    this.saveStatus(status);
+    return Promise.resolve({ ...status });
+  }
+
+  updateApprovalMode(id: string, mode: 'ask' | 'auto'): Promise<ProjectStatus | null> {
+    const status = this.loadStatus(id);
+
+    if (!status) {
+      return Promise.resolve(null);
+    }
+
+    status.approvalMode = mode;
     this.saveStatus(status);
     return Promise.resolve({ ...status });
   }
