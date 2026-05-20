@@ -3284,6 +3284,11 @@
 
     if (!message && !hasImages) return;
 
+    // On touch devices, dismiss the on-screen keyboard once a message is committed.
+    if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+      $input.blur();
+    }
+
     // All messages (including slash commands) are sent to Claude agent
     if (state.messageSending || state.agentStarting) return;
 
