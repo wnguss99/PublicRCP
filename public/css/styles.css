@@ -1,8 +1,8 @@
 /* Base font size and font families (VS Code default style, Korean + English) */
 :root {
-  --claudito-font-size: 14px;
+  --claudito-font-size: 17px;
   --claudito-conversation-font-size: 0.95rem;
-  --claudito-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', '맑은 고딕', system-ui, sans-serif;
+  --claudito-font-sans: 'Malgun Gothic', '맑은 고딕', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --claudito-font-mono: Consolas, 'Cascadia Code', 'D2Coding', 'Malgun Gothic', '맑은 고딕', 'Courier New', monospace;
 }
 
@@ -425,7 +425,7 @@ html, body {
 }
 
 html {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 body {
@@ -1691,6 +1691,17 @@ body {
   text-overflow: ellipsis;
 }
 
+.conversation-history-item .conv-session-id {
+  margin-top: 0.125rem;
+  font-family: var(--claudito-font-mono);
+  font-size: 0.625rem;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
 .conversation-history-item .btn-rename-conversation {
   opacity: 0;
   transition: opacity 0.15s;
@@ -2692,7 +2703,7 @@ body {
 
   /* Adjust font sizes for better readability */
   :root {
-    --claudito-font-size: 15px;
+    --claudito-font-size: 18px;
   }
 
   /* Better spacing for conversation messages */

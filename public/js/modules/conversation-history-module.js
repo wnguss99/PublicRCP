@@ -112,10 +112,18 @@
                 '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>' +
               '</svg>' +
             '</button>' +
+            '<button class="btn-delete-conversation p-1 text-gray-500 hover:text-red-400 rounded transition-colors flex-shrink-0" data-conversation-id="' + conv.id + '" data-conversation-label="' + escapeHtml(label) + '" title="Delete">' +
+              '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+                '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>' +
+              '</svg>' +
+            '</button>' +
           '</div>' +
           '<div class="conv-meta">' +
             '<span class="conv-date">' + date + '</span>' +
             '<span class="conv-messages">' + messageCount + ' msgs</span>' +
+          '</div>' +
+          '<div class="conv-session-id" title="Session ID: ' + escapeHtml(conv.id) + '">' +
+            escapeHtml(conv.id) +
           '</div>' +
         '</div>'
       );
@@ -215,8 +223,8 @@
 
     // Load conversation when clicking on history item
     $(document).on('click', '.conversation-history-item', function(e) {
-      // Don't trigger if clicking the rename button
-      if ($(e.target).closest('.btn-rename-conversation').length) return;
+      // Don't trigger if clicking the rename or delete button
+      if ($(e.target).closest('.btn-rename-conversation, .btn-delete-conversation').length) return;
 
       var conversationId = $(this).data('conversation-id');
 

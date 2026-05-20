@@ -659,6 +659,21 @@
   };
 
   /**
+   * Delete a conversation from history
+   * @function deleteConversation
+   * @memberof module:ApiClient
+   * @param {string} projectId - Project UUID
+   * @param {string} conversationId - Conversation UUID
+   * @returns {Promise<void>} Resolves when deleted
+   */
+  ApiClient.deleteConversation = function(projectId, conversationId) {
+    return $.ajax({
+      url: baseUrl + '/api/projects/' + projectId + '/conversations/' + conversationId,
+      method: 'DELETE'
+    });
+  };
+
+  /**
    * Set the current active conversation
    * @function setCurrentConversation
    * @memberof module:ApiClient

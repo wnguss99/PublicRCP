@@ -125,5 +125,26 @@ export function createConversationRouter(deps: ProjectRouterDependencies): Route
     res.json({ success: true });
   }));
 
+  // Delete a conversation
+  router.delete('/:conversationId', validateParams(projectAndConversationIdSchema), validateProjectExists(projectRepository), asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params['id'] as string;
+    const conversationId = req.params['conversationId'] as string;
+    const project = req.project!;
+
+    const conversation = await conversationRepository.findById(id, conversationId);
+
+    if (!conversation) {
+      throw new NotFoundError('Conversation');
+    }
+
+    // If the deleted conversation is the active one, clear the pointer.
+    if (project.currentConversationId === conversationId) {
+      await projectRepository.setCurrentConversation(id, null);
+    }
+
+    await conversationRepository.deleteConversation(id, conversationId);
+    res.json({ success: true });
+  }));
+
   return router;
 }

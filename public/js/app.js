@@ -947,6 +947,11 @@
         return false;
       }
 
+      // Skip legacy "Session ID: xxx" system messages saved in old conversations
+      if (isSessionIdMessage(msg)) {
+        return false;
+      }
+
       return true;
     });
 
@@ -1094,6 +1099,15 @@
   function isDebugMessage(message) {
     // Only messages explicitly marked as debug should be hidden
     return message.isDebug === true;
+  }
+
+  // Legacy "Session ID: xxx" system messages were saved into older conversations
+  // before the session ID was moved off-screen. Hide them on render.
+  function isSessionIdMessage(message) {
+    return message
+      && message.type === 'system'
+      && typeof message.content === 'string'
+      && message.content.indexOf('Session ID:') === 0;
   }
 
   function appendMessage(projectId, message) {
@@ -2676,6 +2690,40 @@
       var conversationId = $(this).data('conversation-id');
       var currentLabel = $(this).data('current-label');
       showRenameConversationModal(conversationId, currentLabel);
+    });
+
+    // Delete conversation button click
+    $(document).on('click', '.btn-delete-conversation', function(e) {
+      e.stopPropagation();
+      var conversationId = $(this).data('conversation-id');
+      var label = $(this).data('conversation-label');
+
+      if (!conversationId || !state.selectedProjectId) return;
+
+      showConfirm('Delete session', 'Delete "' + label + '"? This cannot be undone.', {
+        confirmText: 'Delete',
+        danger: true
+      }).then(function(confirmed) {
+        if (!confirmed) return;
+
+        var projectId = state.selectedProjectId;
+        api.deleteConversation(projectId, conversationId)
+          .done(function() {
+            showToast('Session deleted', 'success');
+
+            // If the deleted session was the active one, clear the view
+            if (state.currentConversationId === conversationId) {
+              state.currentConversationId = null;
+              state.conversations[projectId] = [];
+              renderConversation(projectId);
+            }
+
+            ConversationHistoryModule.loadList();
+          })
+          .fail(function(xhr) {
+            showErrorToast(xhr, 'Failed to delete session');
+          });
+      });
     });
 
     // Confirm rename conversation
