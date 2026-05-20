@@ -79,6 +79,7 @@
     currentConversationId: null,
     currentConversationStats: null, // { messageCount, toolCallCount, userMessageCount, durationMs, startedAt }
     currentConversationMetadata: null,
+    currentConversationLabel: null,
     conversationHistoryOpen: false,
     queuedMessageCount: 0, // Number of messages waiting to be sent to agent
     sendWithCtrlEnter: true, // Configurable: true = Ctrl+Enter to send, false = Enter to send
@@ -1054,7 +1055,24 @@
    * the selected project. CSS handles the one-line + ellipsis; the full text
    * goes into the title attribute for hover.
    */
+  function updateConversationNameBar() {
+    var $bar = $('#conversation-name-bar');
+    if (!$bar.length) return;
+
+    var label = state.currentConversationLabel;
+    if (!label) {
+      $bar.addClass('hidden');
+      $bar.find('.conversation-name-text').text('');
+      return;
+    }
+
+    $bar.removeClass('hidden');
+    $bar.find('.conversation-name-text').text(label);
+  }
+
   function updateLastRequestBar() {
+    updateConversationNameBar();
+
     var $bar = $('#last-request-bar');
     if (!$bar.length) return;
 
@@ -3162,6 +3180,7 @@
         state.currentConversationId = null;
         state.currentConversationStats = null;
         state.currentConversationMetadata = null;
+        state.currentConversationLabel = null;
         state.conversations[projectId] = [];
         renderConversation(projectId);
         ConversationHistoryModule.updateStats();
@@ -3204,10 +3223,15 @@
       return;
     }
 
-    api.renameConversation(state.selectedProjectId, state.pendingRenameConversationId, newLabel)
+    var renamedId = state.pendingRenameConversationId;
+    api.renameConversation(state.selectedProjectId, renamedId, newLabel)
       .done(function() {
         closeModal('modal-rename-conversation');
         ConversationHistoryModule.loadList();
+        if (state.currentConversationId === renamedId) {
+          state.currentConversationLabel = newLabel;
+          updateConversationNameBar();
+        }
         showToast('Conversation renamed', 'success');
         state.pendingRenameConversationId = null;
       })
@@ -4240,6 +4264,7 @@
         state.conversations[projectId] = data.messages || [];
         state.currentConversationStats = data.stats || null;
         state.currentConversationMetadata = data.metadata || null;
+        state.currentConversationLabel = data.label || null;
 
         if (state.selectedProjectId === projectId) {
           renderConversation(projectId);
@@ -5195,6 +5220,7 @@
             state.currentConversationId = null;
             state.currentConversationStats = null;
             state.currentConversationMetadata = null;
+            state.currentConversationLabel = null;
             state.conversations[projectId] = [];
             renderConversation(projectId);
             ConversationHistoryModule.updateStats();
@@ -5328,6 +5354,7 @@
           state.currentConversationId = null;
           state.currentConversationStats = null;
           state.currentConversationMetadata = null;
+          state.currentConversationLabel = null;
           state.conversations[projectId] = [];
           renderConversation(projectId);
           ConversationHistoryModule.updateStats();
@@ -5903,6 +5930,7 @@
       startedAt: new Date().toISOString()
     };
     state.currentConversationMetadata = null;
+    state.currentConversationLabel = null;
     ConversationHistoryModule.updateStats();
 
     // Reload conversation history dropdown

@@ -74,6 +74,32 @@ html, body {
 
 /* Pinned last user request — fixed strip at the top of the chat area so the
    user can always see what they last asked. One line, ellipsised when long. */
+/* Conversation name bar — sits above the last-request bar */
+#conversation-name-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  background: rgba(17, 24, 39, 0.96);
+  border-bottom: 1px solid rgba(55, 65, 81, 0.5);
+  font-size: 0.75rem;
+}
+#conversation-name-bar.hidden {
+  display: none;
+}
+#conversation-name-bar .conversation-name-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #9ca3af;
+  font-weight: 500;
+}
 #last-request-bar {
   position: absolute;
   top: 0;
@@ -87,6 +113,10 @@ html, body {
   background: rgba(17, 24, 39, 0.96);
   border-bottom: 1px solid rgb(55 65 81);
   font-size: 0.8125rem;
+}
+/* Shift last-request-bar down when conversation-name-bar is visible */
+#conversation-name-bar:not(.hidden) ~ #last-request-bar {
+  top: 1.625rem;
 }
 #last-request-bar.hidden {
   display: none;
@@ -108,8 +138,14 @@ html, body {
   text-overflow: ellipsis;
   color: #d1d5db;
 }
-/* When the bar is visible, push the scroll content down so it isn't covered. */
-#last-request-bar:not(.hidden) ~ #conversation-container {
+/* Push scroll content down based on visible bars */
+#conversation-name-bar:not(.hidden) ~ #last-request-bar:not(.hidden) ~ #conversation-container {
+  padding-top: 3.875rem;
+}
+#conversation-name-bar:not(.hidden) ~ #last-request-bar.hidden ~ #conversation-container {
+  padding-top: 1.625rem;
+}
+#conversation-name-bar.hidden ~ #last-request-bar:not(.hidden) ~ #conversation-container {
   padding-top: 2.25rem;
 }
 

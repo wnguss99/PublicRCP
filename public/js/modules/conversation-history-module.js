@@ -154,6 +154,7 @@
             state.conversations[state.selectedProjectId] = data.messages || [];
             state.currentConversationStats = data.stats || null;
             state.currentConversationMetadata = data.metadata || null;
+            state.currentConversationLabel = data.label || null;
             renderConversation(state.selectedProjectId);
             updateConversationStats();
 
