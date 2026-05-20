@@ -24,6 +24,9 @@ logs/
 *.log
 npm-debug.log*
 
+# PM2 runtime
+.pm2/
+
 # Test coverage
 coverage/
 
