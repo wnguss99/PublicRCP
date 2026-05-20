@@ -605,6 +605,11 @@
             </div>
 
             <div id="conversation-wrapper" class="flex-1 relative overflow-hidden">
+              <!-- Pinned last user request — stays visible while scrolling -->
+              <div id="last-request-bar" class="hidden" title="">
+                <span class="last-request-label">최근 요청</span>
+                <span class="last-request-text"></span>
+              </div>
               <div id="conversation-container" class="absolute inset-0 overflow-y-auto p-3">
                 <div id="conversation" class="space-y-2 font-mono text-sm">
                   <!-- Conversation messages will be rendered here -->

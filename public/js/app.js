@@ -968,6 +968,7 @@
     }
 
     restorePromptState(messages);
+    updateLastRequestBar();
     scrollConversationToBottom();
   }
 
@@ -1041,6 +1042,35 @@
   function truncateString(str, maxLen) {
     if (str.length <= maxLen) return str;
     return str.substring(0, maxLen - 3) + '...';
+  }
+
+  /**
+   * Refresh the pinned "last request" bar with the most recent user message of
+   * the selected project. CSS handles the one-line + ellipsis; the full text
+   * goes into the title attribute for hover.
+   */
+  function updateLastRequestBar() {
+    var $bar = $('#last-request-bar');
+    if (!$bar.length) return;
+
+    var messages = state.conversations[state.selectedProjectId] || [];
+    var lastUser = null;
+    for (var i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user' && messages[i].content) {
+        lastUser = messages[i];
+        break;
+      }
+    }
+
+    if (!lastUser) {
+      $bar.addClass('hidden').attr('title', '');
+      $bar.find('.last-request-text').text('');
+      return;
+    }
+
+    var oneLine = String(lastUser.content).replace(/\s+/g, ' ').trim();
+    $bar.removeClass('hidden').attr('title', oneLine);
+    $bar.find('.last-request-text').text(oneLine);
   }
 
   function scrollConversationToBottom() {
@@ -1190,6 +1220,11 @@
       // Unblock input after compaction completes (compaction message follows status_change)
       if (message.type === 'compaction' && state.activePromptType === 'compacting') {
         setPromptBlockingState(null);
+      }
+
+      // Refresh the pinned last-request bar when the user sends a message
+      if (message.type === 'user') {
+        updateLastRequestBar();
       }
 
       scrollConversationToBottom();

@@ -72,6 +72,47 @@ html, body {
   min-height: 7rem;
 }
 
+/* Pinned last user request — fixed strip at the top of the chat area so the
+   user can always see what they last asked. One line, ellipsised when long. */
+#last-request-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  background: rgba(17, 24, 39, 0.96);
+  border-bottom: 1px solid rgb(55 65 81);
+  font-size: 0.8125rem;
+}
+#last-request-bar.hidden {
+  display: none;
+}
+#last-request-bar .last-request-label {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 4px;
+  background: rgba(124, 58, 237, 0.25);
+  color: #c4b5fd;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+#last-request-bar .last-request-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #d1d5db;
+}
+/* When the bar is visible, push the scroll content down so it isn't covered. */
+#last-request-bar:not(.hidden) ~ #conversation-container {
+  padding-top: 2.25rem;
+}
+
 /* Working indicator — VS Code-style pill floating at the bottom-left of the
    chat area, just above the message input. */
 #agent-working-indicator {
