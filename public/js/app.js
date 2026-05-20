@@ -2444,6 +2444,14 @@
       sendMessage();
     });
 
+    // On mobile, block input refocus for a short period after sending
+    $('#input-message').on('focusin', function() {
+      if (state._blockInputFocus) {
+        $(this).blur();
+        return false;
+      }
+    });
+
     // New conversation button - show confirmation dialog
     $('#btn-new-conversation').on('click', function() {
       showNewConversationConfirmation();
@@ -3367,12 +3375,15 @@
 
     if (!message && !hasImages) return;
 
-    // On touch devices, dismiss the on-screen keyboard once a message is committed.
+    // On touch devices, dismiss the on-screen keyboard and block refocus for 1s.
+    // Multiple code paths (updateInputArea, setPromptBlockingState, AJAX callbacks)
+    // can re-enable/re-focus the input after send, so we use a focusin guard.
     var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
     if (isTouchDevice) {
-      $input[0].readOnly = true;
       $input.blur();
       document.activeElement && document.activeElement.blur();
+      state._blockInputFocus = true;
+      setTimeout(function() { state._blockInputFocus = false; }, 1000);
     }
 
     // All messages (including slash commands) are sent to Claude agent
@@ -3416,13 +3427,8 @@
       renderProjectList();
     }
 
-    // Disable input while sending (on mobile, use readOnly to avoid disabled→enabled focus restore)
-    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    if (isTouchDevice) {
-      $input[0].readOnly = true;
-    } else {
-      $input.prop('disabled', true);
-    }
+    // Disable input while sending
+    $input.prop('disabled', true);
     $('#btn-send-message').prop('disabled', true);
 
     // Build user message with images
@@ -3456,11 +3462,9 @@
       })
       .always(function() {
         state.messageSending = false;
+        $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
-        if (isTouchDevice) {
-          $input[0].readOnly = false;
-        } else {
-          $input.prop('disabled', false);
+        if (!state._blockInputFocus) {
           $input.focus();
         }
       });
@@ -3494,13 +3498,8 @@
       renderProjectList();
     }
 
-    // Disable input while starting (on mobile, use readOnly to avoid disabled→enabled focus restore)
-    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    if (isTouchDevice) {
-      $input[0].readOnly = true;
-    } else {
-      $input.prop('disabled', true);
-    }
+    // Disable input while starting
+    $input.prop('disabled', true);
     $('#btn-send-message').prop('disabled', true);
     showContentLoading(sessionId ? 'Resuming session...' : 'Starting agent...');
 
@@ -3560,11 +3559,9 @@
         // Only hide loading and re-enable inputs if still viewing the same project
         if (state.selectedProjectId === projectId) {
           hideContentLoading();
+          $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
-          if (isTouchDevice) {
-            $input[0].readOnly = false;
-          } else {
-            $input.prop('disabled', false);
+          if (!state._blockInputFocus) {
             $input.focus();
           }
         }
