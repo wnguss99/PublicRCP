@@ -3450,7 +3450,10 @@
         state.messageSending = false;
         $input.prop('disabled', false);
         $('#btn-send-message').prop('disabled', false);
-        if (!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches)) {
+        if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+          $input.blur();
+          document.activeElement && document.activeElement.blur();
+        } else {
           $input.focus();
         }
       });
@@ -3547,7 +3550,10 @@
           hideContentLoading();
           $input.prop('disabled', false);
           $('#btn-send-message').prop('disabled', false);
-          if (!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches)) {
+          if (window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+            $input.blur();
+            document.activeElement && document.activeElement.blur();
+          } else {
             $input.focus();
           }
         }
