@@ -3985,6 +3985,10 @@
           state.currentAgentMode = data.mode;
           state.queuedMessageCount = data.queuedMessageCount || 0;
           showAgentRunningIndicator(true);
+          // Re-sync waiting state: showAgentRunningIndicator resets agentWaiting to false
+          if (projectId === state.selectedProjectId && typeof data.isWaitingForInput === 'boolean') {
+            AgentControlsModule.setAgentWaiting(data.isWaitingForInput);
+          }
           updateQueuedMessagesDisplay();
           startAgentStatusPolling(projectId); // Start polling as fallback
         } else {
@@ -5919,6 +5923,10 @@
     // Update running indicator for selected project
     if (projectId === state.selectedProjectId) {
       showAgentRunningIndicator(status === 'running');
+      // Re-sync waiting state: showAgentRunningIndicator resets agentWaiting to false
+      if (status === 'running' && fullStatus && typeof fullStatus.isWaitingForInput === 'boolean') {
+        AgentControlsModule.setAgentWaiting(fullStatus.isWaitingForInput);
+      }
       updateStartStopButtons();
       updateCancelButton();
 
