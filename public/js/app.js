@@ -1143,6 +1143,17 @@
     if (!state.conversations[projectId]) {
       state.conversations[projectId] = [];
     }
+
+    // Deduplicate: skip if the last message has the same timestamp and type
+    // (can happen when loadConversationHistory races with a WebSocket agent_message)
+    if (message.timestamp && message.type) {
+      var conv = state.conversations[projectId];
+      var last = conv[conv.length - 1];
+      if (last && last.timestamp === message.timestamp && last.type === message.type) {
+        return;
+      }
+    }
+
     state.conversations[projectId].push(message);
 
     // Update real-time stats
