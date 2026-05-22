@@ -5877,9 +5877,10 @@
   function handleAgentMessage(projectId, message) {
     appendMessage(projectId, message);
 
-    // Clear waiting indicator when receiving agent messages (Claude is actively working)
+    // result type = turn complete → immediately show "Waiting for your input"
+    // all other messages = agent actively working → clear waiting indicator
     if (projectId === state.selectedProjectId) {
-      AgentControlsModule.setAgentWaiting(false);
+      AgentControlsModule.setAgentWaiting(message.type === 'result');
       var project = findProjectById(projectId);
 
       if (project && project.isWaitingForInput) {
