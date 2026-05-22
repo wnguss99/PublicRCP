@@ -57,6 +57,7 @@ export interface SpawnOptions {
   cwd: string;
   shell: boolean;
   detached?: boolean;
+  windowsHide?: boolean;
 }
 
 const defaultSpawner: ProcessSpawner = {
@@ -290,6 +291,7 @@ export class WorkerAgent {
       cwd: this.projectPath,
       shell: true,
       detached: !isWindows,
+      windowsHide: isWindows,
     });
 
     if (this.process.pid) {
@@ -571,7 +573,7 @@ export class WorkerAgent {
   private killProcessTree(pid: number): void {
     if (isWindows) {
       // Use execFile to prevent command injection
-      execFile('taskkill', ['/PID', String(pid), '/T'], () => {});
+      execFile('taskkill', ['/PID', String(pid), '/T'], { windowsHide: true }, () => {});
     } else {
       try {
         process.kill(-pid, 'SIGTERM');
@@ -588,7 +590,7 @@ export class WorkerAgent {
   private forceKillProcess(pid: number): void {
     if (isWindows) {
       // Use execFile to prevent command injection
-      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => {});
+      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
     } else {
       try {
         process.kill(-pid, 'SIGKILL');

@@ -12,6 +12,7 @@ export interface SpawnOptions {
   cwd: string;
   shell: boolean;
   stdio?: ('pipe' | 'inherit' | 'ignore')[];
+  windowsHide?: boolean;
 }
 
 export interface FileOperations {
@@ -245,6 +246,7 @@ Write the ROADMAP.md file to doc/ROADMAP.md now.`;
         cwd: projectPath,
         shell: true,
         stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
       });
 
       // Write prompt to stdin and close it

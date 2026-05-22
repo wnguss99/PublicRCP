@@ -52,7 +52,7 @@ function getProcessCommandLine(pid: number): string | null {
       // Windows: use wmic to get command line
       const output = execSync(
         `wmic process where processid=${pid} get commandline /format:list`,
-        { encoding: 'utf-8', timeout: 5000 }
+        { encoding: 'utf-8', timeout: 5000, windowsHide: true }
       );
       const match = output.match(/CommandLine=(.+)/);
       return match && match[1] ? match[1].trim() : null;

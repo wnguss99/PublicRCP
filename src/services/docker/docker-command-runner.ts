@@ -11,11 +11,11 @@ const execFileAsync = promisify(execFile);
 
 export class DefaultDockerCommandRunner implements DockerCommandRunner {
   async exec(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-    const result = await execFileAsync(command, args, { encoding: 'utf-8' });
+    const result = await execFileAsync(command, args, { encoding: 'utf-8', windowsHide: true });
     return { stdout: result.stdout, stderr: result.stderr };
   }
 
   spawn(command: string, args: string[]): ChildProcess {
-    return spawn(command, args);
+    return spawn(command, args, { windowsHide: true });
   }
 }

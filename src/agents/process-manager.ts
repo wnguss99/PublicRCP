@@ -215,7 +215,7 @@ export class ProcessManager extends EventEmitter {
 
     try {
       if (this.isWindows) {
-        execFile('taskkill', ['/PID', String(pid), '/F', '/T'], (error) => {
+        execFile('taskkill', ['/PID', String(pid), '/F', '/T'], { windowsHide: true }, (error) => {
           if (error) {
             this.logger.debug('Failed to force kill process tree', {
               pid,
@@ -334,7 +334,7 @@ export class ProcessManager extends EventEmitter {
     // On Windows, use /F (force) directly as graceful shutdown often doesn't work
     // /T kills the entire process tree
     return new Promise((resolve) => {
-      execFile('taskkill', ['/PID', String(pid), '/F', '/T'], (error) => {
+      execFile('taskkill', ['/PID', String(pid), '/F', '/T'], { windowsHide: true }, (error) => {
         if (error && !error.message.includes('not found')) {
           this.logger.debug('Failed to kill process', {
             pid,
@@ -412,7 +412,7 @@ export class ProcessManager extends EventEmitter {
       return new Promise((resolve) => {
         // Always use /F on Windows as graceful shutdown often doesn't work
         const args = ['/PID', String(pid), '/F', '/T'];
-        execFile('taskkill', args, (error) => {
+        execFile('taskkill', args, { windowsHide: true }, (error) => {
           if (error && !error.message.includes('not found')) {
             // Don't throw, just resolve - process may already be dead
           }

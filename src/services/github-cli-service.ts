@@ -195,7 +195,7 @@ export class DefaultCommandRunner implements CommandRunner {
       const child = execFile(
         command,
         args,
-        { cwd: options?.cwd, encoding: 'utf-8', shell: useShell },
+        { cwd: options?.cwd, encoding: 'utf-8', shell: useShell, windowsHide: useShell },
         (err, stdout, stderr) => {
           if (err) {
             reject(err);
@@ -213,7 +213,7 @@ export class DefaultCommandRunner implements CommandRunner {
 
   spawn(command: string, args: string[], options?: CommandRunnerOptions): ChildProcess {
     const useShell = process.platform === 'win32';
-    return spawn(command, args, { ...(options?.cwd ? { cwd: options.cwd } : {}), shell: useShell });
+    return spawn(command, args, { ...(options?.cwd ? { cwd: options.cwd } : {}), shell: useShell, windowsHide: useShell });
   }
 }
 
