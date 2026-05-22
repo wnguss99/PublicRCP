@@ -3543,6 +3543,7 @@
       project.isWaitingForInput = false;
       state.waitingVersion++;
       renderProjectList();
+      AgentControlsModule.setAgentWaiting(false);
     }
 
     // Disable input while sending
@@ -4795,6 +4796,9 @@
       .done(function() {
         updateProjectStatusById(projectId, 'stopped');
         stopAgentStatusPolling();
+        if (projectId === state.selectedProjectId) {
+          showAgentRunningIndicator(false);
+        }
         appendMessage(projectId, {
           type: 'system',
           content: 'Agent stopped.'
@@ -4981,6 +4985,9 @@
         if (actualStatus !== 'running' && project && project.status === 'running') {
           updateProjectStatusById(projectId, actualStatus);
           stopAgentStatusPolling();
+          if (projectId === state.selectedProjectId) {
+            showAgentRunningIndicator(false);
+          }
           state.currentAgentMode = null;
           state.queuedMessageCount = 0;
           updateQueuedMessagesDisplay();
