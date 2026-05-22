@@ -18,6 +18,12 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.env.https
+
+# TLS certificates
+*.crt
+*.key
+*.pem
 
 # Logs
 logs/
