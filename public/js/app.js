@@ -1144,12 +1144,13 @@
       state.conversations[projectId] = [];
     }
 
-    // Deduplicate: skip if the last message has the same timestamp and type
+    // Deduplicate: skip if any recent message has the same timestamp and type
     // (can happen when loadConversationHistory races with a WebSocket agent_message)
     if (message.timestamp && message.type) {
       var conv = state.conversations[projectId];
-      var last = conv[conv.length - 1];
-      if (last && last.timestamp === message.timestamp && last.type === message.type) {
+      var key = message.timestamp + ':' + message.type;
+      var recentKeys = conv.slice(-20).map(function(m) { return m.timestamp + ':' + m.type; });
+      if (recentKeys.indexOf(key) !== -1) {
         return;
       }
     }
@@ -5871,6 +5872,7 @@
 
     // Clear waiting indicator when receiving agent messages (Claude is actively working)
     if (projectId === state.selectedProjectId) {
+      AgentControlsModule.setAgentWaiting(false);
       var project = findProjectById(projectId);
 
       if (project && project.isWaitingForInput) {
