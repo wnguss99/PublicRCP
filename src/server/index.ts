@@ -1,5 +1,6 @@
 import express, { Application, Request, Response } from 'express';
 import { Server, createServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
 import fs from 'fs';
 import path from 'path';
 import { AppConfig } from '../config';
@@ -156,7 +157,20 @@ export class ExpressHttpServer implements HttpServer {
     await this.cleanupOrphanProcesses();
 
     return new Promise((resolve, reject) => {
-      this.httpServer = createServer(this.app);
+      const certPath = process.env['HTTPS_CERT'];
+      const keyPath = process.env['HTTPS_KEY'];
+      const useHttps = certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath);
+
+      if (useHttps) {
+        const tlsOptions = {
+          cert: fs.readFileSync(certPath!),
+          key: fs.readFileSync(keyPath!),
+        };
+        this.httpServer = createHttpsServer(tlsOptions, this.app);
+        console.log('\x1b[32m✓ HTTPS mode enabled\x1b[0m');
+      } else {
+        this.httpServer = createServer(this.app);
+      }
 
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
         const address = `${this.config.host}:${this.config.port}`;
