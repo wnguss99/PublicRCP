@@ -252,16 +252,12 @@ export class StreamHandler extends EventEmitter {
   }
 
   /**
-   * Reset per-turn text tracking (called when user sends a new message).
+   * Reset all per-turn tracking state (called when user sends a new message).
+   * All flags here are scoped to a single Claude turn and must be cleared
+   * before each new turn to prevent state leaking across turns.
    */
   resetTurnTracking(): void {
     this.turnHasEmittedText = false;
-  }
-
-  /**
-   * Reset tracking for emitted content (called when new turn starts).
-   */
-  private resetEmittedTracking(): void {
     this.lastEmittedText = '';
     this.emittedToolIds.clear();
     this.hasEmittedExitPlanMode = false;
@@ -269,7 +265,13 @@ export class StreamHandler extends EventEmitter {
     this.hasEmittedAskUserQuestion = false;
     this.askUserQuestionToolIds.clear();
     this.lastEmittedQuestion = '';
-    this.turnHasEmittedText = false;
+  }
+
+  /**
+   * Reset tracking for emitted content (called on session init).
+   */
+  private resetEmittedTracking(): void {
+    this.resetTurnTracking();
   }
 
   /**
@@ -1100,7 +1102,7 @@ export class StreamHandler extends EventEmitter {
   }
 
   /**
-   * Reset the stream handler state.
+   * Reset the stream handler state (called on agent restart).
    */
   reset(): void {
     this.currentToolUse = null;
@@ -1109,14 +1111,7 @@ export class StreamHandler extends EventEmitter {
     this.partialJson = '';
     this.contextUsage = null;
     this.waitingVersion = 0;
-    this.turnHasEmittedText = false;
-    this.lastEmittedText = '';
-    this.emittedToolIds.clear();
-    this.hasEmittedExitPlanMode = false;
-    this.hasEmittedEnterPlanMode = false;
-    this.hasEmittedAskUserQuestion = false;
-    this.askUserQuestionToolIds.clear();
-    this.lastEmittedQuestion = '';
+    this.resetTurnTracking();
   }
 
   /**
