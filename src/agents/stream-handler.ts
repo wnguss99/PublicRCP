@@ -765,9 +765,8 @@ export class StreamHandler extends EventEmitter {
   }
 
   private handleResult(event: StreamEvent): void {
-    // CLI result events contain the full response in 'result' field
-    // Since handleAssistantMessage already emits the text content,
-    // we only need to handle errors here, not re-emit the result
+    // CLI result events mark the end of a turn (success or error).
+    // After any result, the CLI is waiting for the next user input.
     const cliEvent = event as unknown as {
       result?: string;
       is_error?: boolean;
@@ -776,7 +775,7 @@ export class StreamHandler extends EventEmitter {
     };
 
     if (cliEvent.is_error) {
-      // Check for session not found error
+      // Session not found is a fatal error — agent will be restarted, no waitingForInput needed.
       if (cliEvent.errors) {
         for (const error of cliEvent.errors) {
           const match = error.match(/No conversation found with session ID: ([\w-]+)/);
@@ -785,16 +784,19 @@ export class StreamHandler extends EventEmitter {
             return;
           }
         }
-        // Handle other errors
         this.handleResultErrors(cliEvent.errors);
       } else if (cliEvent.result) {
         this.emitResultMessage(cliEvent.result, true);
       }
-    }
-
-    if (!cliEvent.is_error) {
-      // If Claude finished the turn without any text response (only tool calls),
-      // emit a completion message so the user knows the task is done.
+      // Error turn ended — CLI is still alive and waiting for user input.
+      this.waitingVersion++;
+      this.emit('waitingForInput', {
+        isWaiting: true,
+        version: this.waitingVersion,
+      });
+    } else {
+      // Successful turn — if Claude produced no text at all (only tool calls),
+      // emit a completion message so the user knows the task finished.
       if (!this.turnHasEmittedText) {
         this.emitTextMessage('Done.');
       }
@@ -1107,6 +1109,14 @@ export class StreamHandler extends EventEmitter {
     this.partialJson = '';
     this.contextUsage = null;
     this.waitingVersion = 0;
+    this.turnHasEmittedText = false;
+    this.lastEmittedText = '';
+    this.emittedToolIds.clear();
+    this.hasEmittedExitPlanMode = false;
+    this.hasEmittedEnterPlanMode = false;
+    this.hasEmittedAskUserQuestion = false;
+    this.askUserQuestionToolIds.clear();
+    this.lastEmittedQuestion = '';
   }
 
   /**
