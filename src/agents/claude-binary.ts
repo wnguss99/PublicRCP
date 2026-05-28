@@ -348,7 +348,9 @@ export class ClaudeBinary implements Agent {
     const success = this.processManager.sendInput(messageToSend);
 
     if (success) {
-      this.streamHandler.resetTurnTracking();
+      // Do NOT reset turn tracking here — tool results are continuations of the
+      // same Claude turn, not new turns. Resetting here would erase text that
+      // Claude already emitted earlier in the turn, causing spurious "Done." messages.
       this._isWaitingForInput = false;
       this._waitingVersion++;
       this.emitter.emit('waitingForInput', {
