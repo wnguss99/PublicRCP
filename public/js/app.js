@@ -5804,23 +5804,22 @@
       return;
     }
 
-    // Update project-level version tracking
+    // Always update UI for the selected project regardless of project list state
+    if (state.selectedProjectId === projectId) {
+      state.waitingVersion = serverVersion;
+      AgentControlsModule.setAgentWaiting(isWaiting);
+      updateCancelButton();
+
+      if (isWaiting) {
+        PermissionModeModule.applyPendingIfNeeded();
+      }
+    }
+
+    // Update project-level version tracking if project is in the list
     if (project) {
       project.waitingVersion = serverVersion;
       project.isWaitingForInput = isWaiting;
       renderProjectList();
-
-      if (state.selectedProjectId === projectId) {
-        // Also update global state for selected project
-        state.waitingVersion = serverVersion;
-        AgentControlsModule.setAgentWaiting(isWaiting);
-        updateCancelButton();
-
-        // If agent became idle and there's a pending mode change, apply it
-        if (isWaiting) {
-          PermissionModeModule.applyPendingIfNeeded();
-        }
-      }
 
       // Send desktop notification if enabled and waiting
       if (isWaiting && state.settings && state.settings.enableDesktopNotifications) {
