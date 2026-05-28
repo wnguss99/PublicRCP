@@ -90,6 +90,8 @@ export class StreamHandler extends EventEmitter {
   private hasEmittedAskUserQuestion = false;
   private askUserQuestionToolIds = new Set<string>();
   private lastEmittedQuestion = '';
+  // Track whether any text was emitted in the current turn
+  private turnHasEmittedText = false;
 
   constructor(
     private readonly logger: Logger,
@@ -250,6 +252,13 @@ export class StreamHandler extends EventEmitter {
   }
 
   /**
+   * Reset per-turn text tracking (called when user sends a new message).
+   */
+  resetTurnTracking(): void {
+    this.turnHasEmittedText = false;
+  }
+
+  /**
    * Reset tracking for emitted content (called when new turn starts).
    */
   private resetEmittedTracking(): void {
@@ -260,6 +269,7 @@ export class StreamHandler extends EventEmitter {
     this.hasEmittedAskUserQuestion = false;
     this.askUserQuestionToolIds.clear();
     this.lastEmittedQuestion = '';
+    this.turnHasEmittedText = false;
   }
 
   /**
@@ -783,6 +793,11 @@ export class StreamHandler extends EventEmitter {
     }
 
     if (!cliEvent.is_error) {
+      // If Claude finished the turn without any text response (only tool calls),
+      // emit a completion message so the user knows the task is done.
+      if (!this.turnHasEmittedText) {
+        this.emitTextMessage('Done.');
+      }
       this.waitingVersion++;
       this.emit('waitingForInput', {
         isWaiting: true,
@@ -843,6 +858,7 @@ export class StreamHandler extends EventEmitter {
   }
 
   private emitTextMessage(text: string): void {
+    this.turnHasEmittedText = true;
     this.emitMessage({
       type: 'stdout',
       content: text,

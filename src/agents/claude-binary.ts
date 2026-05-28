@@ -348,6 +348,7 @@ export class ClaudeBinary implements Agent {
     const success = this.processManager.sendInput(messageToSend);
 
     if (success) {
+      this.streamHandler.resetTurnTracking();
       this._isWaitingForInput = false;
       this._waitingVersion++;
       this.emitter.emit('waitingForInput', {
@@ -595,6 +596,9 @@ export class ClaudeBinary implements Agent {
     if (success) {
       // Note: Don't emit user message here - the UI already shows it when user sends
       // Emitting it again would cause duplicate display
+
+      // Reset per-turn text tracking so we can detect silent turns
+      this.streamHandler.resetTurnTracking();
 
       // Update waiting status
       this._isWaitingForInput = false;
