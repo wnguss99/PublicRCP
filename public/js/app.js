@@ -975,7 +975,23 @@
 
     restorePromptState(messages);
     updateLastRequestBar();
+
+    // Force scroll to bottom on full render, ignoring scroll lock.
+    // Scroll lock is for live sessions only (user scrolled up to read history);
+    // when we render the whole conversation from scratch we always want the latest.
+    var prevLock = state.agentOutputScrollLock;
+    state.agentOutputScrollLock = false;
     scrollConversationToBottom();
+    state.agentOutputScrollLock = prevLock;
+
+    // Re-scroll after a short delay to catch async content (Mermaid diagrams,
+    // images) that increases scrollHeight after the initial render.
+    setTimeout(function() {
+      if (!state.agentOutputScrollLock) {
+        var $c = $('#conversation-container');
+        if ($c.length) $c.scrollTop($c[0].scrollHeight);
+      }
+    }, 300);
   }
 
   function restorePromptState(messages) {
@@ -1283,6 +1299,13 @@
       }
 
       scrollConversationToBottom();
+      // Re-scroll after async content (Mermaid diagrams) finishes rendering
+      setTimeout(function() {
+        if (!state.agentOutputScrollLock) {
+          var $c = $('#conversation-container');
+          if ($c.length) $c.scrollTop($c[0].scrollHeight);
+        }
+      }, 300);
     }
   }
 
