@@ -23,7 +23,9 @@
     "lint:fix": "eslint src/ test/ --fix",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "typecheck:frontend": "tsc -p public/js/tsconfig.json",
-    "typecheck": "npm run build && npm run typecheck:frontend"
+    "typecheck": "npm run build && npm run typecheck:frontend",
+    "validate": "node scripts/validate.mjs",
+    "validate:static": "node scripts/validate.mjs --static"
   },
   "keywords": [
     "claude",

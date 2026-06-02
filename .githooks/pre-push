@@ -1,0 +1,15 @@
+#!/bin/sh
+# claudito pre-push 안전 게이트
+# 서버를 망가뜨릴 수 있는 변경이 origin 으로 나가는 것을 차단한다.
+# 우회(긴급): git push --no-verify  (지양 — 다음 커밋이라도 정정할 것)
+
+echo "[pre-push] 서버 안전 검증 게이트 실행..."
+node scripts/validate.mjs
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "[pre-push] 검증 실패 — push 차단됨."
+  echo "           위 항목을 고친 뒤 다시 push 하라. (긴급 우회: git push --no-verify)"
+  exit 1
+fi
+echo "[pre-push] 검증 통과 — push 진행."
+exit 0
