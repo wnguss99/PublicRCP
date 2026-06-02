@@ -17,6 +17,7 @@
   var showToast = null;
   var openModal = null;
   var closeAllModals = null;
+  var sendMessage = null;
 
   // Module state
   var currentTemplate = null;
@@ -28,6 +29,7 @@
     showToast = deps.showToast;
     openModal = deps.openModal;
     closeAllModals = deps.closeAllModals;
+    sendMessage = deps.sendMessage;
     setupHandlers();
   }
 
@@ -290,8 +292,8 @@
       state.templateAutoSend = false; // Reset flag
       // Use setTimeout to ensure the text is properly inserted first
       setTimeout(function() {
-        if (dependencies.sendMessage) {
-          dependencies.sendMessage();
+        if (sendMessage) {
+          sendMessage();
         }
       }, 100);
     }

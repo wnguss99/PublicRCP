@@ -17,6 +17,8 @@
   var escapeHtml = null;
   var showToast = null;
   var api = null;
+  var openModal = null;
+  var closeModal = null;
 
   // Module-local state
   var currentLoop = null;
@@ -30,6 +32,8 @@
     escapeHtml = deps.escapeHtml;
     showToast = deps.showToast;
     api = deps.ApiClient;
+    openModal = deps.openModal;
+    closeModal = deps.closeModal;
     setupEventListeners();
   }
 

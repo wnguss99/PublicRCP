@@ -3570,6 +3570,7 @@
     }
 
     // Disable input while sending
+    var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
     $input.prop('disabled', true);
     $('#btn-send-message').prop('disabled', true);
 
@@ -6400,7 +6401,9 @@
         state: state,
         escapeHtml: EscapeUtils.escapeHtml,
         showToast: showToast,
-        ApiClient: api
+        ApiClient: api,
+        openModal: openModal,
+        closeModal: closeModal
       });
     }
 
