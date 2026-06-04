@@ -101,11 +101,11 @@ export function createSettingsRouter(deps: SettingsRouterDependencies): Router {
 
   router.put('/', asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const body = req.body as UpdateSettingsBody;
-    await validateSettingsBody(body, slackService);
+    const currentSettings = await settingsRepository.get();
+    await validateSettingsBody(body, slackService, currentSettings);
 
     const slackPayload = buildSlackPayload(body.slack);
     const emailPayload = buildEmailPayload(body.email);
-    const currentSettings = await settingsRepository.get();
     const changeEvent = detectChanges(body, slackPayload, currentSettings);
 
     const updated = await settingsRepository.update({
@@ -121,7 +121,11 @@ export function createSettingsRouter(deps: SettingsRouterDependencies): Router {
   return router;
 }
 
-async function validateSettingsBody(body: UpdateSettingsBody, slackService?: SlackService): Promise<void> {
+async function validateSettingsBody(
+  body: UpdateSettingsBody,
+  slackService?: SlackService,
+  currentSettings?: { slack?: { botToken?: string } },
+): Promise<void> {
   const { maxConcurrentAgents, claudePermissions, promptTemplates, mcp, docker, agentProfiles, slack } = body;
 
   if (maxConcurrentAgents !== undefined && (typeof maxConcurrentAgents !== 'number' || maxConcurrentAgents < 1)) {
@@ -151,14 +155,19 @@ async function validateSettingsBody(body: UpdateSettingsBody, slackService?: Sla
   }
 
   if (slack?.botToken && slack.botToken.trim()) {
-    if (!slackService) {
-      throw new ValidationError('Slack service not available');
-    }
+    const trimmed = slack.botToken.trim();
+    const unchanged = trimmed === currentSettings?.slack?.botToken;
 
-    const validation = await slackService.validateBotToken(slack.botToken.trim());
+    if (!unchanged) {
+      if (!slackService) {
+        throw new ValidationError('Slack service not available');
+      }
 
-    if (!validation.valid) {
-      throw new ValidationError('Invalid bot token: ' + (validation.error ?? 'authentication failed'));
+      const validation = await slackService.validateBotToken(trimmed);
+
+      if (!validation.valid) {
+        throw new ValidationError('Invalid bot token: ' + (validation.error ?? 'authentication failed'));
+      }
     }
   }
 }
