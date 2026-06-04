@@ -3080,12 +3080,26 @@
 
       if (!raw) return;
 
+      var subject = (function() {
+        var stripped = raw
+          .replace(/```[\s\S]*?```/g, '')
+          .replace(/`[^`]+`/g, '')
+          .replace(/^#{1,6}\s+/gm, '')
+          .replace(/[*_~>|\[\]]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        var firstLine = stripped.split(/[.!?\n]/)[0].trim();
+        var summary = (firstLine || stripped).slice(0, 60);
+        if ((firstLine || stripped).length > 60) summary += '...';
+        return '[Claudito] ' + summary;
+      })();
+
       $btn.prop('disabled', true);
       $.ajax({
         url: '/api/email/send',
         method: 'POST',
         contentType: 'application/json',
-        data: JSON.stringify({ body: raw, projectId: state.selectedProjectId }),
+        data: JSON.stringify({ body: raw, subject: subject, projectId: state.selectedProjectId }),
       }).done(function() {
         showToast('Email sent', 'success');
       }).fail(function(xhr) {
