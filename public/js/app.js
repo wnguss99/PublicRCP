@@ -780,8 +780,10 @@
     var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
     if (emailEnabled) {
       $('body').addClass('email-enabled');
+      $('.msg-email-btn').css('display', 'flex');
     } else {
       $('body').removeClass('email-enabled');
+      $('.msg-email-btn').css('display', 'none');
     }
   }
 
@@ -973,8 +975,11 @@
     // Reset timestamp context for time differences
     MessageRenderer.resetRenderingContext();
 
+    var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
     filteredMessages.forEach(function(msg) {
-      $conv.append(MessageRenderer.renderMessage(msg));
+      var $msg = $(MessageRenderer.renderMessage(msg));
+      $msg.find('.msg-email-btn').css('display', emailEnabled ? 'flex' : 'none');
+      $conv.append($msg);
     });
 
     // Inject mermaid toolbars after rendering all messages
@@ -1269,6 +1274,10 @@
 
       var $rendered = $(MessageRenderer.renderMessage(message));
       $conv.append($rendered);
+
+      // Apply email button visibility to newly added message
+      var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
+      $rendered.find('.msg-email-btn').css('display', emailEnabled ? 'flex' : 'none');
 
       // Inject mermaid toolbars if message contains mermaid diagrams
       if (MessageRenderer.injectMermaidToolbars) {
