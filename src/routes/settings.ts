@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { SettingsRepository, ClaudePermissions, PromptTemplate, McpServerConfig, SlackSettings, AgentProfile } from '../repositories';
+import { SettingsRepository, ClaudePermissions, PromptTemplate, McpServerConfig, SlackSettings, EmailSettings, AgentProfile } from '../repositories';
 import { DataWipeService } from '../services/data-wipe-service';
 import { SlackService } from '../services/slack-service';
 import { DockerSettings } from '../services/docker/types';
@@ -20,6 +20,7 @@ interface UpdateSettingsBody {
     servers?: McpServerConfig[];
   };
   slack?: Partial<SlackSettings>;
+  email?: Partial<EmailSettings>;
   chromeEnabled?: boolean;
   inventifyFolder?: string;
   docker?: Partial<DockerSettings>;
@@ -103,12 +104,14 @@ export function createSettingsRouter(deps: SettingsRouterDependencies): Router {
     await validateSettingsBody(body, slackService);
 
     const slackPayload = buildSlackPayload(body.slack);
+    const emailPayload = buildEmailPayload(body.email);
     const currentSettings = await settingsRepository.get();
     const changeEvent = detectChanges(body, slackPayload, currentSettings);
 
     const updated = await settingsRepository.update({
       ...buildUpdatePayload(body),
       slack: slackPayload,
+      email: emailPayload,
     });
 
     notifyChanges(changeEvent, onSettingsChange);
@@ -170,9 +173,19 @@ function buildSlackPayload(slack: Partial<SlackSettings> | undefined): Partial<S
   };
 }
 
-function buildUpdatePayload(body: UpdateSettingsBody): Omit<UpdateSettingsBody, 'slack'> {
+function buildEmailPayload(email: Partial<EmailSettings> | undefined): Partial<EmailSettings> | undefined {
+  if (!email) return undefined;
+  return {
+    ...email,
+    ...(email.smtpUser !== undefined && { smtpUser: email.smtpUser.trim() }),
+    ...(email.fromAddress !== undefined && { fromAddress: email.fromAddress.trim() }),
+    ...(email.defaultRecipient !== undefined && { defaultRecipient: email.defaultRecipient.trim() }),
+  };
+}
+
+function buildUpdatePayload(body: UpdateSettingsBody): Omit<UpdateSettingsBody, 'slack' | 'email'> {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { slack: _, ...rest } = body;
+  const { slack: _slack, email: _email, ...rest } = body;
   return rest;
 }
 

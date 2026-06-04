@@ -287,6 +287,25 @@ export interface SlackSettings {
   enabled: boolean;
 }
 
+export interface EmailSettings {
+  /** Master enable/disable toggle */
+  enabled: boolean;
+  /** SMTP server hostname */
+  smtpHost: string;
+  /** SMTP server port */
+  smtpPort: number;
+  /** Use TLS (true=465) or STARTTLS (false=587) */
+  smtpSecure: boolean;
+  /** SMTP authentication username */
+  smtpUser: string;
+  /** SMTP authentication password */
+  smtpPassword: string;
+  /** From address for sent emails */
+  fromAddress: string;
+  /** Default recipient when none is specified */
+  defaultRecipient: string;
+}
+
 export interface GlobalSettings {
   maxConcurrentAgents: number;
   claudePermissions: ClaudePermissions;
@@ -308,6 +327,8 @@ export interface GlobalSettings {
   mcp: McpSettings;
   /** Slack integration settings */
   slack: SlackSettings;
+  /** Email notification settings */
+  email: EmailSettings;
   /** Enable Chrome browser usage in Claude agents */
   chromeEnabled: boolean;
   /** Base directory for Inventify-generated projects */
@@ -421,6 +442,16 @@ Your goal is to ensure high-quality deliverables. Be thorough but fair in your a
     appToken: '',
     defaultChannelId: '',
   },
+  email: {
+    enabled: false,
+    smtpHost: '',
+    smtpPort: 587,
+    smtpSecure: false,
+    smtpUser: '',
+    smtpPassword: '',
+    fromAddress: '',
+    defaultRecipient: '',
+  },
   chromeEnabled: false,
   inventifyFolder: '',
   docker: {
@@ -448,6 +479,7 @@ export interface SettingsUpdate {
   ralphLoop?: Partial<RalphLoopSettings>;
   mcp?: Partial<McpSettings>;
   slack?: Partial<SlackSettings>;
+  email?: Partial<EmailSettings>;
   chromeEnabled?: boolean;
   inventifyFolder?: string;
   docker?: Partial<DockerSettings>;
@@ -600,6 +632,19 @@ export class FileSettingsRepository implements SettingsRepository {
     };
   }
 
+  private mergeEmailSettings(parsed?: Partial<EmailSettings>): EmailSettings {
+    return {
+      enabled: parsed?.enabled ?? DEFAULT_SETTINGS.email.enabled,
+      smtpHost: parsed?.smtpHost ?? DEFAULT_SETTINGS.email.smtpHost,
+      smtpPort: parsed?.smtpPort ?? DEFAULT_SETTINGS.email.smtpPort,
+      smtpSecure: parsed?.smtpSecure ?? DEFAULT_SETTINGS.email.smtpSecure,
+      smtpUser: parsed?.smtpUser ?? DEFAULT_SETTINGS.email.smtpUser,
+      smtpPassword: parsed?.smtpPassword ?? DEFAULT_SETTINGS.email.smtpPassword,
+      fromAddress: parsed?.fromAddress ?? DEFAULT_SETTINGS.email.fromAddress,
+      defaultRecipient: parsed?.defaultRecipient ?? DEFAULT_SETTINGS.email.defaultRecipient,
+    };
+  }
+
   private mergeScalarDefaults(parsed: Partial<GlobalSettings>): Pick<GlobalSettings,
     'maxConcurrentAgents' | 'agentPromptTemplate' | 'sendWithCtrlEnter' | 'historyLimit' |
     'enableDesktopNotifications' | 'appendSystemPrompt' | 'claudeMdMaxSizeKB' |
@@ -635,6 +680,7 @@ export class FileSettingsRepository implements SettingsRepository {
         servers: parsed.mcp?.servers ?? DEFAULT_SETTINGS.mcp.servers,
       },
       slack: this.mergeSlackSettings(parsed.slack),
+      email: this.mergeEmailSettings(parsed.email),
       docker: this.mergeDockerSettings(parsed.docker),
       agentProfiles: this.mergeProfiles(parsed.agentProfiles),
     };
@@ -712,6 +758,10 @@ export class FileSettingsRepository implements SettingsRepository {
 
     if (updates.slack) {
       this.settings.slack = { ...this.settings.slack, ...updates.slack };
+    }
+
+    if (updates.email) {
+      this.settings.email = { ...this.settings.email, ...updates.email };
     }
   }
 

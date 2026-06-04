@@ -50,6 +50,7 @@ import { AuthService } from '../services/auth-service';
 import { parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import packageJson from '../../package.json';
 import { ApprovalCoordinator, createPermissionMcpRouter } from '../services/permission-prompt';
+import { createEmailRouter } from './email';
 
 const frontendLogger = getLogger('frontend');
 
@@ -352,6 +353,12 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     ralphLoopService,
     settingsRepository,
   );
+
+  // Email routes
+  router.use('/email', createEmailRouter({
+    settingsRepository,
+    projectRepository,
+  }));
 
   // Docker routes
   const imageManager = getOrCreateImageManager();

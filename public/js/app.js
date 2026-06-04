@@ -776,6 +776,15 @@
     }
   }
 
+  function updateEmailButtonVisibility() {
+    var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
+    if (emailEnabled) {
+      $('body').addClass('email-enabled');
+    } else {
+      $('body').removeClass('email-enabled');
+    }
+  }
+
   // Project detail rendering
   function renderProjectDetail(project) {
     if (!project) {
@@ -1520,6 +1529,24 @@
       loadSlackStatus();
     });
 
+    // Email tab handlers
+    $('#btn-test-email-connection').on('click', function() {
+      var $indicator = $('#email-status-indicator');
+      $indicator.text('Testing...');
+      $.post('/api/email/test')
+        .done(function(result) {
+          if (result.success) {
+            $indicator.html('<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5 align-middle"></span><span class="align-middle">Connected</span>');
+          } else {
+            $indicator.html('<span class="inline-block w-2 h-2 rounded-full bg-red-500 mr-1.5 align-middle"></span><span class="align-middle">' + (result.error || 'Failed') + '</span>');
+          }
+        })
+        .fail(function(xhr) {
+          var msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Not configured';
+          $indicator.html('<span class="inline-block w-2 h-2 rounded-full bg-gray-500 mr-1.5 align-middle"></span><span class="align-middle">' + msg + '</span>');
+        });
+    });
+
     // Wipe All Data - open confirmation modal
     $('#btn-wipe-all-data').on('click', function() {
       $('#modal-confirm-wipe-all').removeClass('hidden');
@@ -1818,6 +1845,7 @@
         state.settings = settings;
         PromptTemplatesModule.renderSettingsTab();
         updateSlackButtonVisibility();
+        updateEmailButtonVisibility();
 
         // MCP settings
         $('#input-mcp-enabled').prop('checked', settings.mcp?.enabled !== false);
@@ -1825,6 +1853,9 @@
 
         // Slack settings
         loadSlackSettingsFields(settings.slack);
+
+        // Email settings
+        loadEmailSettingsFields(settings.email);
 
         // Chrome state
         state.chromeEnabled = settings.chromeEnabled ?? false;
@@ -1888,6 +1919,18 @@
     $('#input-slack-app-token').val((slack && slack.appToken) ? '••••••••' : '');
     $('#input-slack-app-token').data('has-saved-app-token', !!(slack && slack.appToken));
     $('#input-slack-default-channel').val((slack && slack.defaultChannelId) || '');
+  }
+
+  function loadEmailSettingsFields(email) {
+    $('#input-email-enabled').prop('checked', !!(email && email.enabled));
+    $('#input-email-smtp-host').val((email && email.smtpHost) || '');
+    $('#input-email-smtp-port').val((email && email.smtpPort) || 587);
+    $('#input-email-smtp-secure').prop('checked', !!(email && email.smtpSecure));
+    $('#input-email-smtp-user').val((email && email.smtpUser) || '');
+    $('#input-email-smtp-password').val((email && email.smtpPassword) ? '••••••••' : '');
+    $('#input-email-smtp-password').data('has-saved-password', !!(email && email.smtpPassword));
+    $('#input-email-from-address').val((email && email.fromAddress) || '');
+    $('#input-email-default-recipient').val((email && email.defaultRecipient) || '');
   }
 
   function loadSlackStatus() {
@@ -2083,6 +2126,22 @@
 
     settings.slack = slack;
 
+    // Collect Email settings with placeholder detection
+    var emailPassword = $('#input-email-smtp-password').val().trim();
+    var email = {
+      enabled: $('#input-email-enabled').is(':checked'),
+      smtpHost: $('#input-email-smtp-host').val().trim(),
+      smtpPort: parseInt($('#input-email-smtp-port').val(), 10) || 587,
+      smtpSecure: $('#input-email-smtp-secure').is(':checked'),
+      smtpUser: $('#input-email-smtp-user').val().trim(),
+      fromAddress: $('#input-email-from-address').val().trim(),
+      defaultRecipient: $('#input-email-default-recipient').val().trim()
+    };
+    if (emailPassword !== '••••••••') {
+      email.smtpPassword = emailPassword;
+    }
+    settings.email = email;
+
     // Request notification permission if enabling notifications
     if (enableDesktopNotifications && 'Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
@@ -2103,9 +2162,14 @@
         updateInputHint();
         updateChromeToggleButton();
         updateSlackButtonVisibility();
+        updateEmailButtonVisibility();
 
         if (updated.slack) {
           loadSlackSettingsFields(updated.slack);
+        }
+
+        if (updated.email) {
+          loadEmailSettingsFields(updated.email);
         }
 
         if (typeof PermissionModeModule !== 'undefined') {
@@ -2989,6 +3053,41 @@
       copyTextToClipboard(raw, function() {
         $btn.addClass('copied');
         setTimeout(function() { $btn.removeClass('copied'); }, 1500);
+      });
+    });
+
+    // Send assistant message as email
+    $(document).on('click', '.msg-email-btn', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      var $btn = $(this);
+      var raw = '';
+      try {
+        raw = decodeURIComponent($btn.attr('data-raw') || '');
+      } catch (err) {
+        raw = $btn.attr('data-raw') || '';
+      }
+
+      if (!raw) return;
+
+      $btn.prop('disabled', true);
+      $.ajax({
+        url: '/api/email/send',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ body: raw, projectId: state.selectedProjectId }),
+      }).done(function() {
+        showToast('Email sent', 'success');
+      }).fail(function(xhr) {
+        var msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to send email';
+        if (msg === 'Email not configured') {
+          showToast('Email not configured. Go to Settings > Email.', 'error');
+        } else {
+          showToast(msg, 'error');
+        }
+      }).always(function() {
+        $btn.prop('disabled', false);
       });
     });
 
