@@ -352,6 +352,20 @@ html, body {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.msg-email-btn .email-icon-done {
+  display: none;
+}
+.msg-email-btn.sent {
+  opacity: 1;
+  color: #4ade80;
+  border-color: #4ade80;
+}
+.msg-email-btn.sent .email-icon-default {
+  display: none;
+}
+.msg-email-btn.sent .email-icon-done {
+  display: block;
+}
 
 /* Plan content markdown styling */
 .plan-content {

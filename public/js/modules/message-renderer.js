@@ -417,6 +417,7 @@
       '</button>' +
       '<button class="msg-email-btn" type="button" data-raw="' + encodedRaw + '" title="Send as email" aria-label="Send as email">' +
       getEmailIcon() +
+      getEmailCheckIcon() +
       '</button>' +
       '<div class="message-header claude-header">' +
       getClaudeIcon() +
@@ -441,9 +442,15 @@
    * Email icon for send-as-email button.
    */
   function getEmailIcon() {
-    return '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+    return '<svg class="email-icon-default" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
       '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" ' +
       'd="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>' +
+      '</svg>';
+  }
+
+  function getEmailCheckIcon() {
+    return '<svg class="email-icon-done" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>' +
       '</svg>';
   }
 
