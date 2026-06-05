@@ -450,7 +450,10 @@
 
   function getEmailCheckIcon() {
     return '<svg class="email-icon-done" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
-      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>' +
+      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" ' +
+      'd="M5 19h14a2 2 0 002-2V9l-9 6-9-6v8a2 2 0 002 2z"/>' +
+      '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" ' +
+      'd="M3 9l9-5 9 5"/>' +
       '</svg>';
   }
 
