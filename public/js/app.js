@@ -804,6 +804,7 @@
     updateSlackButtonVisibility();
 
     $('#project-name').text(project.name);
+    $('#mobile-project-name').text(project.name).removeClass('hidden');
 
     updateProjectStatus(project);
     renderConversation(project.id);
