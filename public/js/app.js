@@ -3103,7 +3103,6 @@
       }).done(function() {
         showToast('Email sent', 'success');
         $btn.addClass('sent');
-        setTimeout(function() { $btn.removeClass('sent'); }, 2000);
       }).fail(function(xhr) {
         var msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to send email';
         if (msg === 'Email not configured') {
