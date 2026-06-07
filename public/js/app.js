@@ -6053,6 +6053,19 @@
     }
   }
 
+  function updateContextUsageIndicator(contextUsage) {
+    var $indicator = $('#context-usage-indicator');
+    if (!contextUsage || !contextUsage.maxContextTokens) {
+      $indicator.addClass('hidden');
+      return;
+    }
+    var pct = Math.round(contextUsage.percentUsed || 0);
+    var color = pct < 50 ? '#4ade80' : pct < 75 ? '#facc15' : pct < 90 ? '#f97316' : '#f87171';
+    $('#context-usage-bar').css({ width: pct + '%', background: color });
+    $('#context-usage-label').text(pct + '%').css('color', color);
+    $indicator.removeClass('hidden');
+  }
+
   function handleAgentStatus(projectId, data) {
     // Data can be a full status object or a string (for backward compatibility)
     var status = typeof data === 'object' ? data.status : data;
@@ -6117,6 +6130,9 @@
         state.currentSessionId = fullStatus.sessionId;
       }
 
+      // Update context usage indicator
+      updateContextUsageIndicator(fullStatus && fullStatus.contextUsage);
+
       // Update waiting indicator in main panel
       if (fullStatus && status === 'running') {
         var serverVersion = fullStatus.waitingVersion || 0;
@@ -6130,6 +6146,7 @@
     // Reset mode selector and waiting state when agent stops
     if (status !== 'running' && projectId === state.selectedProjectId) {
       state.currentAgentMode = null;
+      $('#context-usage-indicator').addClass('hidden');
 
       // Clear any stale prompt blocking (plan_mode, question, permission, etc.).
       // Discard deferred plan messages first so replaying them doesn't re-block.
