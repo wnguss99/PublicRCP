@@ -1023,6 +1023,11 @@
 
     if (!pendingType) return;
 
+    // Only restore blocking state when the agent is currently running.
+    // Stale plan_mode/question prompts from ended sessions should not block input.
+    var project = findProjectById(state.selectedProjectId);
+    if (!project || project.status !== 'running') return;
+
     setPromptBlockingState(pendingType);
 
     if (pendingType === 'plan_mode') {
