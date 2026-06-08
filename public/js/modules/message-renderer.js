@@ -415,7 +415,7 @@
       getCopyIcon() +
       getCheckIcon() +
       '</button>' +
-      '<button class="msg-email-btn" type="button" data-raw="' + encodedRaw + '" title="Send as email" aria-label="Send as email">' +
+      '<button class="msg-email-btn" type="button" data-raw="' + encodedRaw + '" data-msg-ts="' + (msg.timestamp || '') + '" title="Send as email" aria-label="Send as email">' +
       getEmailIcon() +
       getEmailCheckIcon() +
       '</button>' +

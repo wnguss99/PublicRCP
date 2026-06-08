@@ -979,7 +979,12 @@
     var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
     filteredMessages.forEach(function(msg) {
       var $msg = $(MessageRenderer.renderMessage(msg));
-      $msg.find('.msg-email-btn').css('display', emailEnabled ? 'flex' : 'none');
+      var $emailBtn = $msg.find('.msg-email-btn');
+      $emailBtn.css('display', emailEnabled ? 'flex' : 'none');
+      if (msg.timestamp) {
+        var sentKey = 'email-sent:' + (state.selectedProjectId || '') + ':' + msg.timestamp;
+        try { if (localStorage.getItem(sentKey)) $emailBtn.addClass('sent'); } catch(e) {}
+      }
       $conv.append($msg);
     });
 
@@ -1278,7 +1283,12 @@
 
       // Apply email button visibility to newly added message
       var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
-      $rendered.find('.msg-email-btn').css('display', emailEnabled ? 'flex' : 'none');
+      var $emailBtn = $rendered.find('.msg-email-btn');
+      $emailBtn.css('display', emailEnabled ? 'flex' : 'none');
+      if (message.timestamp) {
+        var sentKey = 'email-sent:' + (state.selectedProjectId || '') + ':' + message.timestamp;
+        try { if (localStorage.getItem(sentKey)) $emailBtn.addClass('sent'); } catch(e) {}
+      }
 
       // Inject mermaid toolbars if message contains mermaid diagrams
       if (MessageRenderer.injectMermaidToolbars) {
@@ -3104,6 +3114,11 @@
       }).done(function() {
         showToast('Email sent', 'success');
         $btn.addClass('sent');
+        var ts = $btn.attr('data-msg-ts');
+        if (ts) {
+          var key = 'email-sent:' + (state.selectedProjectId || '') + ':' + ts;
+          try { localStorage.setItem(key, '1'); } catch(e) {}
+        }
       }).fail(function(xhr) {
         var msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to send email';
         if (msg === 'Email not configured') {
