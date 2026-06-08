@@ -6094,16 +6094,12 @@
   }
 
   function updateContextUsageIndicator(contextUsage) {
-    var $indicator = $('#context-usage-indicator');
-    if (!contextUsage) {
-      $indicator.addClass('hidden');
-      return;
-    }
-    var pct = Math.round(contextUsage.percentUsed || 0);
+    if (!contextUsage || !contextUsage.percentUsed) return;
+    var pct = Math.round(contextUsage.percentUsed);
     var color = pct < 50 ? '#4ade80' : pct < 75 ? '#facc15' : pct < 90 ? '#f97316' : '#f87171';
     $('#context-usage-bar').css({ width: pct + '%', background: color });
     $('#context-usage-label').text(pct + '%').css('color', color);
-    $indicator.removeClass('hidden');
+    $('#context-usage-indicator').removeClass('hidden');
   }
 
   $(document).on('click', '#context-usage-indicator', function() {
@@ -6196,7 +6192,6 @@
     // Reset mode selector and waiting state when agent stops
     if (status !== 'running' && projectId === state.selectedProjectId) {
       state.currentAgentMode = null;
-      $('#context-usage-indicator').addClass('hidden');
 
       // Clear any stale prompt blocking (plan_mode, question, permission, etc.).
       // Discard deferred plan messages first so replaying them doesn't re-block.

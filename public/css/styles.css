@@ -183,6 +183,29 @@ html, body {
 #conversation-container.has-working-indicator {
   padding-bottom: 3.25rem;
 }
+/* Context usage indicator — mirrors working indicator on the bottom-right */
+#context-usage-indicator {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  background: rgba(31, 41, 55, 0.92);
+  border: 1px solid rgb(75 85 99);
+  border-radius: 9999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+#context-usage-indicator:hover {
+  border-color: rgb(156 163 175);
+}
+#context-usage-indicator.hidden {
+  display: none;
+}
 
 /* Send / cancel buttons — larger by default so they're easy to click on desktop
    and easy to tap with a thumb on mobile (Apple HIG / Material both recommend ≥44px). */
