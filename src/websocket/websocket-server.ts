@@ -167,6 +167,7 @@ export type WebSocketMessageData =
   | RunConfigOutputData
   | RunConfigStatusData
   | DockerBuildProgressData
+  | ContextUsage
   | string; // Covers 'connected' messages and simple loop events
 
 export interface SessionRecoveryData {
@@ -207,6 +208,7 @@ export interface WebSocketMessage {
     | 'docker_fallback_warning'
     | 'approval_request'
     | 'approval_resolved'
+    | 'context_usage'
 ;
   projectId?: string;
   data?: WebSocketMessageData | SessionRecoveryData | DockerFallbackWarningData;
@@ -577,6 +579,14 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
         type: 'agent_waiting',
         projectId,
         data: waitingStatus,
+      });
+    });
+
+    this.agentManager.on('contextUsage', (projectId, usage) => {
+      this.broadcastToProject(projectId, {
+        type: 'context_usage',
+        projectId,
+        data: usage,
       });
     });
 

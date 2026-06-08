@@ -421,6 +421,11 @@ export class ClaudeBinary implements Agent {
       // Set max context tokens
       const maxTokens = this._limits.contextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
       this.streamHandler.setMaxContextTokens(maxTokens);
+      // Emit updated usage (maxContextTokens now set) to surface to UI
+      const updated = this.streamHandler.getContextUsage();
+      if (updated) {
+        this.emitter.emit('contextUsage', updated);
+      }
     });
 
     this.streamHandler.on('error', (error: Error) => {

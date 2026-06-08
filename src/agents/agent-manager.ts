@@ -77,6 +77,7 @@ export interface AgentManagerEvents {
   message: (projectId: string, message: AgentMessage) => void;
   status: (projectId: string, status: AgentStatus) => void;
   waitingForInput: (projectId: string, waitingStatus: WaitingStatus) => void;
+  contextUsage: (projectId: string, usage: ContextUsage) => void;
   queueChange: (queue: QueuedProject[]) => void;
   milestoneStarted: (projectId: string, milestone: MilestoneRef) => void;
   milestoneCompleted: (projectId: string, milestone: MilestoneRef, reason: string) => void;
@@ -139,6 +140,7 @@ export interface FullAgentStatus {
   sessionId: string | null;
   permissionMode: 'acceptEdits' | 'plan' | null;
   hasActiveOneOffAgents: boolean;
+  contextUsage?: ContextUsage | null;
 }
 
 export interface AgentManager {
@@ -284,6 +286,7 @@ export class DefaultAgentManager implements AgentManager {
     message: new Set(),
     status: new Set(),
     waitingForInput: new Set(),
+    contextUsage: new Set(),
     queueChange: new Set(),
     milestoneStarted: new Set(),
     milestoneCompleted: new Set(),
@@ -867,6 +870,7 @@ export class DefaultAgentManager implements AgentManager {
       sessionId: this.getSessionId(projectId),
       permissionMode: agent?.permissionMode || null,
       hasActiveOneOffAgents: activeOneOffs.length > 0,
+      contextUsage: this.getContextUsage(projectId),
     };
   }
 
@@ -1492,9 +1496,14 @@ export class DefaultAgentManager implements AgentManager {
       void this.handleEnterPlanMode(agent);
     };
 
+    const contextUsageListener = (usage: ContextUsage): void => {
+      this.emit('contextUsage', projectId, usage);
+    };
+
     agent.on('message', messageListener);
     agent.on('status', statusListener);
     agent.on('waitingForInput', waitingListener);
+    agent.on('contextUsage', contextUsageListener);
     agent.on('exit', exitListener);
     agent.on('sessionNotFound', sessionNotFoundListener);
     agent.on('exitPlanMode', exitPlanModeListener);

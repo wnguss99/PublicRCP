@@ -4085,6 +4085,10 @@
     // Save selected project to localStorage
     saveToLocalStorage(LOCAL_STORAGE_KEYS.SELECTED_PROJECT, projectId);
 
+    // Clear stale conversation state so renderConversation shows placeholder
+    // instead of old messages while the AJAX history load is in flight.
+    state.conversations[projectId] = [];
+
     subscribeToProject(projectId);
     loadConversationHistory(projectId);
     updateSelectedProject();
@@ -5834,6 +5838,11 @@
       case 'agent_message':
         handleAgentMessage(message.projectId, message.data);
         break;
+      case 'context_usage':
+        if (message.projectId === state.selectedProjectId) {
+          updateContextUsageIndicator(message.data);
+        }
+        break;
       case 'agent_status':
         handleAgentStatus(message.projectId, message.data);
         break;
@@ -5975,6 +5984,12 @@
 
       if (isWaiting) {
         PermissionModeModule.applyPendingIfNeeded();
+        // Force scroll to show the last response when the agent finishes a turn
+        var $c = $('#conversation-container');
+        if ($c.length) {
+          state.agentOutputScrollLock = false;
+          $c.scrollTop($c[0].scrollHeight);
+        }
       }
     }
 
@@ -6049,6 +6064,11 @@
         project.isWaitingForInput = false;
         renderProjectList();
       }
+
+      // Update context usage indicator from message payload
+      if (message.contextUsage) {
+        updateContextUsageIndicator(message.contextUsage);
+      }
     }
 
     // Check for commit message response
@@ -6070,7 +6090,7 @@
 
   function updateContextUsageIndicator(contextUsage) {
     var $indicator = $('#context-usage-indicator');
-    if (!contextUsage || !contextUsage.maxContextTokens) {
+    if (!contextUsage) {
       $indicator.addClass('hidden');
       return;
     }
@@ -6080,6 +6100,16 @@
     $('#context-usage-label').text(pct + '%').css('color', color);
     $indicator.removeClass('hidden');
   }
+
+  $(document).on('click', '#context-usage-indicator', function() {
+    var project = findProjectById(state.selectedProjectId);
+    var isWaiting = project && project.isWaitingForInput;
+    if (state.agentStatus === 'running' && !isWaiting) {
+      return;
+    }
+    $('#input-message').val('/compact');
+    sendMessage();
+  });
 
   function handleAgentStatus(projectId, data) {
     // Data can be a full status object or a string (for backward compatibility)

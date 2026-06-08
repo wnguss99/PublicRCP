@@ -55,6 +55,7 @@ export interface AgentEvents {
   status: (status: AgentStatus) => void;
   exit: (code: number | null) => void;
   waitingForInput: (status: WaitingStatus) => void;
+  contextUsage: (usage: ContextUsage) => void;
   sessionNotFound: (sessionId: string) => void;
   exitPlanMode: (planContent: string) => void;
   enterPlanMode: () => void;
