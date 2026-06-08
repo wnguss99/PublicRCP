@@ -11,7 +11,7 @@ export const SUPPORTED_MODELS = [
 
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number];
 
-export const DEFAULT_MODEL: SupportedModel = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL: SupportedModel = 'claude-opus-4-6';
 
 export const MODEL_DISPLAY_NAMES: Record<SupportedModel, string> = {
   'claude-opus-4-6': 'Claude Opus 4.6',
