@@ -142,8 +142,9 @@ const BLOCK_PATTERN = /​​%%CBLOCK_(\d+)%%​​/;
 
 function markdownToHtml(markdown: string): string {
   const blocks: string[] = [];
+  const normalized = markdown.replace(/\r\n?/g, '\n');
 
-  const protected_ = markdown.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+  const protected_ = normalized.replace(/^```(\w*)[^\S\n]*\n([\s\S]*?)^```[^\S\n]*$/gm, (_m, lang, code) => {
     const idx = blocks.length;
     const langLabel = lang ? `<span style="color:#9ca3af;font-size:0.75em">${escapeHtml(lang)}</span><br>` : '';
     blocks.push(
