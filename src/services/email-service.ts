@@ -10,17 +10,146 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function parseListBlock(lines: string[], start: number): { html: string; end: number } {
+  const stack: { tag: 'ul' | 'ol'; indent: number }[] = [];
+  const out: string[] = [];
+  let i = start;
+
+  while (i < lines.length) {
+    const raw = lines[i] ?? '';
+    const listMatch = raw.match(/^(\s*)([-*]|\d+\.)\s(.*)/);
+    if (!listMatch) break;
+
+    const indent = listMatch[1]!.length;
+    const marker = listMatch[2]!;
+    const content = listMatch[3] ?? '';
+    const tag: 'ul' | 'ol' = /^\d+\./.test(marker) ? 'ol' : 'ul';
+
+    while (stack.length > 0 && stack[stack.length - 1]!.indent > indent) {
+      const popped = stack.pop()!;
+      out.push(`</${popped.tag}>`);
+    }
+
+    if (stack.length === 0 || indent > stack[stack.length - 1]!.indent) {
+      stack.push({ tag, indent });
+      const listStyle = tag === 'ul'
+        ? 'margin:6px 0;padding-left:20px'
+        : 'margin:6px 0;padding-left:20px';
+      out.push(`<${tag} style="${listStyle}">`);
+    } else if (stack[stack.length - 1]!.tag !== tag) {
+      const popped = stack.pop()!;
+      out.push(`</${popped.tag}>`);
+      stack.push({ tag, indent });
+      out.push(`<${tag} style="margin:6px 0;padding-left:20px">`);
+    }
+
+    const checkboxMatch = content.match(/^\[([ xX])\]\s*(.*)/);
+    if (checkboxMatch) {
+      const checked = checkboxMatch[1] !== ' ';
+      const text = checkboxMatch[2] ?? '';
+      const checkbox = checked
+        ? '<span style="color:#4ade80;font-family:monospace">&#9745;</span>'
+        : '<span style="color:#6b7280;font-family:monospace">&#9744;</span>';
+      out.push(`<li style="margin:2px 0;list-style:none">${checkbox} ${inlineFormat(text)}</li>`);
+    } else {
+      out.push(`<li style="margin:2px 0">${inlineFormat(content)}</li>`);
+    }
+
+    i++;
+  }
+
+  while (stack.length > 0) {
+    out.push(`</${stack.pop()!.tag}>`);
+  }
+
+  return { html: out.join(''), end: i };
+}
+
+function parseCells(row: string): string[] {
+  const stripped = row.replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  let current = '';
+  for (let j = 0; j < stripped.length; j++) {
+    if (stripped[j] === '\\' && j + 1 < stripped.length && stripped[j + 1] === '|') {
+      current += '|';
+      j++;
+    } else if (stripped[j] === '|') {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += stripped[j];
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTable(lines: string[], start: number): { html: string; end: number } | null {
+  const headerLine = lines[start] ?? '';
+  const separatorLine = lines[start + 1] ?? '';
+
+  if (!headerLine.includes('|') || !separatorLine.includes('|')) return null;
+
+  const headers = parseCells(headerLine);
+  const separators = parseCells(separatorLine);
+
+  if (headers.length !== separators.length) return null;
+  if (!separators.every(s => /^:?-{3,}:?$/.test(s))) return null;
+
+  const aligns = separators.map(s => {
+    const left = s.startsWith(':');
+    const right = s.endsWith(':');
+    if (left && right) return 'center';
+    if (right) return 'right';
+    return 'left';
+  });
+
+  const cellStyle = 'padding:6px 12px;border:1px solid #374151';
+  const headerCellStyle = `${cellStyle};background:#1e293b;color:#93c5fd;font-weight:600`;
+
+  let html = '<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:8px 0;width:100%;font-size:0.9em">';
+  html += '<thead><tr>';
+  headers.forEach((h, idx) => {
+    const align = aligns[idx] ?? 'left';
+    html += `<th align="${align}" bgcolor="#1e293b" style="${headerCellStyle};text-align:${align}">${inlineFormat(h)}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  let i = start + 2;
+  let rowIdx = 0;
+  while (i < lines.length && (lines[i] ?? '').includes('|')) {
+    const cells = parseCells(lines[i] ?? '');
+    const rowBg = rowIdx % 2 === 0 ? '' : 'background:#1a2332;';
+    const rowBgAttr = rowIdx % 2 === 0 ? '' : ' bgcolor="#1a2332"';
+    html += `<tr${rowBgAttr}>`;
+    headers.forEach((_h, idx) => {
+      const align = aligns[idx] ?? 'left';
+      const cell = cells[idx] ?? '';
+      html += `<td align="${align}" style="${cellStyle};${rowBg}text-align:${align}">${inlineFormat(cell)}</td>`;
+    });
+    html += '</tr>';
+    i++;
+    rowIdx++;
+  }
+
+  html += '</tbody></table>';
+  return { html, end: i };
+}
+
+const BLOCK_MARKER_START = '​​%%CBLOCK_';
+const BLOCK_MARKER_END = '%%​​';
+const BLOCK_PATTERN = /​​%%CBLOCK_(\d+)%%​​/;
+
 function markdownToHtml(markdown: string): string {
   const blocks: string[] = [];
 
-  // Extract fenced code blocks first to protect from other transforms
   const protected_ = markdown.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
     const idx = blocks.length;
     const langLabel = lang ? `<span style="color:#9ca3af;font-size:0.75em">${escapeHtml(lang)}</span><br>` : '';
     blocks.push(
-      `<pre style="background:#1e293b;color:#e2e8f0;padding:12px 16px;border-radius:6px;overflow-x:auto;font-family:monospace;font-size:0.875em;margin:8px 0">${langLabel}${escapeHtml(code.replace(/\n$/, ''))}</pre>`
+      `<pre bgcolor="#1e293b" style="background:#1e293b;color:#e2e8f0;padding:12px 16px;border-radius:6px;overflow-x:auto;font-family:monospace;font-size:0.875em;margin:8px 0">${langLabel}${escapeHtml(code.replace(/\n$/, ''))}</pre>`
     );
-    return `\x00BLOCK${idx}\x00`;
+    return `${BLOCK_MARKER_START}${idx}${BLOCK_MARKER_END}`;
   });
 
   const lines: string[] = protected_.split('\n');
@@ -30,9 +159,9 @@ function markdownToHtml(markdown: string): string {
   while (i < lines.length) {
     const line: string = lines[i] ?? '';
 
-    // Restore code block placeholders
-    if (/^\x00BLOCK\d+\x00$/.test(line.trim())) {
-      const idx = parseInt(line.trim().replace(/\x00BLOCK(\d+)\x00/, '$1'));
+    const blockMatch = line.trim().match(BLOCK_PATTERN);
+    if (blockMatch) {
+      const idx = parseInt(blockMatch[1]!);
       out.push(blocks[idx] ?? '');
       i++;
       continue;
@@ -49,52 +178,51 @@ function markdownToHtml(markdown: string): string {
     // Horizontal rule
     if (/^---+$/.test(line.trim())) { out.push('<hr style="border:none;border-top:1px solid #374151;margin:12px 0">'); i++; continue; }
 
-    // Unordered list
-    if (/^[-*] /.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*] /.test(lines[i] ?? '')) {
-        items.push(`<li style="margin:2px 0">${inlineFormat((lines[i] ?? '').replace(/^[-*] /, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ul style="margin:6px 0;padding-left:20px">${items.join('')}</ul>`);
+    // Table
+    if (line.includes('|') && i + 1 < lines.length) {
+      const table = parseTable(lines, i);
+      if (table) { out.push(table.html); i = table.end; continue; }
+    }
+
+    // Lists (unordered, ordered, checkbox — with nesting)
+    if (/^\s*([-*]|\d+\.)\s/.test(line)) {
+      const list = parseListBlock(lines, i);
+      out.push(list.html);
+      i = list.end;
       continue;
     }
 
-    // Ordered list
-    if (/^\d+\. /.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+\. /.test(lines[i] ?? '')) {
-        items.push(`<li style="margin:2px 0">${inlineFormat((lines[i] ?? '').replace(/^\d+\. /, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ol style="margin:6px 0;padding-left:20px">${items.join('')}</ol>`);
-      continue;
-    }
-
-    // Blockquote
+    // Blockquote (multi-line)
     if (/^> /.test(line)) {
-      const text = line.replace(/^> /, '');
-      out.push(`<blockquote style="border-left:3px solid #4b5563;margin:6px 0;padding:4px 12px;color:#9ca3af">${inlineFormat(text)}</blockquote>`);
-      i++;
+      const quoteLines: string[] = [];
+      while (i < lines.length && /^> /.test(lines[i] ?? '')) {
+        quoteLines.push((lines[i] ?? '').replace(/^> /, ''));
+        i++;
+      }
+      const quoteContent = quoteLines.map(l => inlineFormat(l)).join('<br>');
+      out.push(`<table cellpadding="0" cellspacing="0" border="0" style="margin:6px 0"><tr><td bgcolor="#4b5563" width="3" style="width:3px;background:#4b5563"></td><td style="padding:4px 12px;color:#9ca3af">${quoteContent}</td></tr></table>`);
       continue;
     }
 
-    // Empty line → paragraph break
+    // Empty line
     if (line.trim() === '') { out.push('<br>'); i++; continue; }
 
     out.push(`<p style="margin:4px 0">${inlineFormat(line)}</p>`);
     i++;
   }
 
-  return `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#e2e8f0;background:#111827;padding:20px;border-radius:8px">${out.join('')}</div>`;
+  return `<table cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#111827"><tr><td style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#e2e8f0;background:#111827;padding:20px;border-radius:8px">${out.join('')}</td></tr></table>`;
 }
 
 function inlineFormat(text: string): string {
+  const urlPattern = '[^()]*(?:\\([^()]*\\))*[^()]*';
   return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del style="text-decoration:line-through;color:#9ca3af">$1</del>')
     .replace(/`([^`]+)`/g, '<code style="background:#1e293b;padding:1px 5px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:#60a5fa">$1</a>');
+    .replace(new RegExp(`!\\[([^\\]]*)\\]\\((${urlPattern})\\)`, 'g'), '<img src="$2" alt="$1" style="max-width:100%;height:auto;border-radius:6px;margin:4px 0">')
+    .replace(new RegExp(`\\[([^\\]]+)\\]\\((${urlPattern})\\)`, 'g'), '<a href="$2" style="color:#60a5fa">$1</a>');
 }
 
 export class DefaultEmailService implements EmailService {
