@@ -110,14 +110,22 @@ export class ProcessManager extends EventEmitter {
 
     const resolvedCommand = this.isWindows ? resolveWindowsCommand(command) : command;
 
+    // Windows spawns via cmd.exe (shell:true). A raw newline inside any argument
+    // is treated by cmd.exe as a command terminator, corrupting the command line
+    // and making the process hang with no output. No claude CLI argument requires
+    // an embedded newline, so collapse them defensively.
+    const safeArgs = this.isWindows
+      ? args.map((a) => a.replace(/\r?\n/g, ' '))
+      : args;
+
     this.logger.info('Spawning Claude CLI process', {
       command: resolvedCommand,
-      args: args.length,
+      args: safeArgs.length,
       workingDirectory,
     });
 
     try {
-      this.process = this.spawner.spawn(resolvedCommand, args, spawnOptions);
+      this.process = this.spawner.spawn(resolvedCommand, safeArgs, spawnOptions);
     } catch (error) {
       this.logger.error('Failed to spawn process', {
         error: error instanceof Error ? error.message : 'Unknown error',

@@ -103,7 +103,11 @@ export class MessageBuilder {
     }
 
     if (options.appendSystemPrompt && options.appendSystemPrompt.trim().length > 0) {
-      args.push('--append-system-prompt', options.appendSystemPrompt.trim());
+      // Collapse newlines to spaces: on Windows the process is spawned with
+      // shell:true (required to launch claude.cmd), and an embedded newline in
+      // an argument is interpreted by cmd.exe as a command terminator, which
+      // breaks the command line and makes the agent hang with no output.
+      args.push('--append-system-prompt', options.appendSystemPrompt.trim().replace(/\r?\n/g, ' '));
     }
 
     if (options.agentTurns !== undefined && options.agentTurns > 0) {
