@@ -1,8 +1,13 @@
 import nodemailer from 'nodemailer';
 import { EmailSettings } from '../repositories/settings';
 
+export interface EmailAttachment {
+  filename: string;
+  path: string;
+}
+
 export interface EmailService {
-  sendEmail(to: string, subject: string, body: string): Promise<void>;
+  sendEmail(to: string, subject: string, body: string, attachments?: EmailAttachment[]): Promise<void>;
   testConnection(): Promise<{ success: boolean; error?: string }>;
 }
 
@@ -245,7 +250,7 @@ export class DefaultEmailService implements EmailService {
     });
   }
 
-  async sendEmail(to: string, subject: string, body: string): Promise<void> {
+  async sendEmail(to: string, subject: string, body: string, attachments?: EmailAttachment[]): Promise<void> {
     const transport = this.createTransport();
     await transport.sendMail({
       from: this.settings.fromAddress,
@@ -253,6 +258,7 @@ export class DefaultEmailService implements EmailService {
       subject,
       html: markdownToHtml(body),
       text: body,
+      attachments: attachments?.map(a => ({ filename: a.filename, path: a.path })),
     });
   }
 

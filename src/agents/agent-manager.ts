@@ -215,6 +215,8 @@ export interface AgentFactoryOptions {
   approvalMode?: 'ask' | 'auto';
   /** Base URL of the Claudito MCP permission server (passed through to ClaudeBinary). */
   permissionMcpBaseUrl?: string;
+  /** Base URL of the Claudito MCP email server (passed through to ClaudeBinary). */
+  emailMcpBaseUrl?: string;
 }
 
 export interface AgentFactory {
@@ -249,6 +251,8 @@ export interface AgentManagerDependencies {
   maxConcurrentAgents?: number;
   /** Base URL of Claudito's embedded MCP permission server (for inline approval UI). */
   permissionMcpBaseUrl?: string;
+  /** Base URL of Claudito's embedded MCP email server (for agent email sending). */
+  emailMcpBaseUrl?: string;
   /** Optional coordinator — when present, pending approvals are auto-denied on agent stop. */
   approvalCoordinator?: import('../services/permission-prompt').ApprovalCoordinator;
 }
@@ -279,6 +283,7 @@ export class DefaultAgentManager implements AgentManager {
   private readonly permissionGenerator: PermissionGenerator;
   private readonly containerManager: ContainerManager | null;
   private readonly permissionMcpBaseUrl: string | null;
+  private readonly emailMcpBaseUrl: string | null;
   private readonly approvalCoordinator: import('../services/permission-prompt').ApprovalCoordinator | null;
   private readonly logger: Logger;
   private readonly pendingMessageSaves: Set<Promise<unknown>> = new Set();
@@ -323,6 +328,7 @@ export class DefaultAgentManager implements AgentManager {
     containerManager,
     maxConcurrentAgents = 5,
     permissionMcpBaseUrl,
+    emailMcpBaseUrl,
     approvalCoordinator,
   }: AgentManagerDependencies) {
     this.projectRepository = projectRepository;
@@ -334,6 +340,7 @@ export class DefaultAgentManager implements AgentManager {
     this.permissionGenerator = permissionGenerator || new DefaultPermissionGenerator();
     this.containerManager = containerManager || null;
     this.permissionMcpBaseUrl = permissionMcpBaseUrl || null;
+    this.emailMcpBaseUrl = emailMcpBaseUrl || null;
     this.approvalCoordinator = approvalCoordinator || null;
     this._maxConcurrentAgents = maxConcurrentAgents;
     this.logger = getLogger('agent-manager');
@@ -527,6 +534,7 @@ export class DefaultAgentManager implements AgentManager {
       agentProfile,
       approvalMode: project.approvalMode ?? 'ask',
       permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
+      emailMcpBaseUrl: this.emailMcpBaseUrl ?? undefined,
     });
 
     this.agents.set(projectId, agent);
@@ -1026,6 +1034,12 @@ export class DefaultAgentManager implements AgentManager {
     const settings = await this.settingsRepository.get();
     const permissionConfig = this.resolveOneOffPermissions(settings, project, options);
     const model = await this.getModelForProject(options.projectId);
+
+    const globalMcpServers = settings.mcp?.enabled
+      ? (settings.mcp.servers || []).filter((server) => server.enabled)
+      : [];
+    const mcpServers = this.applyMcpOverrides(globalMcpServers, project.mcpOverrides);
+
     const dockerResult = await this.getDockerProcessSpawner(
       options.projectId, project.path, project.dockerImage ?? undefined,
     );
@@ -1041,9 +1055,13 @@ export class DefaultAgentManager implements AgentManager {
       mode: 'interactive',
       permissions: permissionConfig,
       model,
+      mcpServers,
       chromeEnabled: settings.chromeEnabled ?? false,
       processSpawner: dockerResult.processSpawner,
       agentProfile,
+      approvalMode: project.approvalMode ?? 'ask',
+      permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
+      emailMcpBaseUrl: this.emailMcpBaseUrl ?? undefined,
     });
 
     this.registerOneOffAgent(oneOffId, agent, options);
@@ -1337,6 +1355,7 @@ export class DefaultAgentManager implements AgentManager {
       agentProfile,
       approvalMode: project.approvalMode ?? 'ask',
       permissionMcpBaseUrl: this.permissionMcpBaseUrl ?? undefined,
+      emailMcpBaseUrl: this.emailMcpBaseUrl ?? undefined,
     });
 
     this.agents.set(projectId, agent);

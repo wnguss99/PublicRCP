@@ -50,10 +50,10 @@ export function createAuthMiddleware(deps: AuthMiddlewareDependencies) {
       return;
     }
 
-    // Permission MCP server is called by the locally-spawned Claude CLI process,
-    // which has no browser cookie. The endpoint is bound to loopback effectively
-    // (caller is always our own child process) and only accepts MCP JSON-RPC.
-    if (typeof req.path === 'string' && req.path.startsWith('/mcp/permission/')) {
+    // MCP servers are called by the locally-spawned Claude CLI process,
+    // which has no browser cookie. The endpoints are bound to loopback effectively
+    // (caller is always our own child process) and only accept MCP JSON-RPC.
+    if (typeof req.path === 'string' && req.path.startsWith('/mcp/')) {
       next();
       return;
     }

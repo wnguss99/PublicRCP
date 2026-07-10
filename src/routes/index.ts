@@ -51,6 +51,7 @@ import { parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import packageJson from '../../package.json';
 import { ApprovalCoordinator, createPermissionMcpRouter } from '../services/permission-prompt';
 import { createEmailRouter } from './email';
+import { createEmailMcpRouter } from '../services/email-mcp-server';
 
 const frontendLogger = getLogger('frontend');
 
@@ -124,9 +125,16 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
   const mcpPort = deps.serverPort ?? Number(process.env.PORT) ?? 3000;
   // Claude CLI runs on the same host as Claudito, so loopback is always reachable.
   const permissionMcpBaseUrl = `http://127.0.0.1:${mcpPort}/api/mcp/permission`;
+  const emailMcpBaseUrl = `http://127.0.0.1:${mcpPort}/api/mcp/email`;
 
   router.use('/mcp/permission', createPermissionMcpRouter({
     coordinator: approvalCoordinator,
+    resolveProjectId: (req) => req.params['projectId'] || null,
+  }));
+
+  router.use('/mcp/email', createEmailMcpRouter({
+    settingsRepository,
+    projectRepository,
     resolveProjectId: (req) => req.params['projectId'] || null,
   }));
 
@@ -140,6 +148,7 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     containerManager,
     maxConcurrentAgents: deps.maxConcurrentAgents,
     permissionMcpBaseUrl,
+    emailMcpBaseUrl,
     approvalCoordinator,
   });
 
@@ -417,6 +426,7 @@ interface AgentManagerConfig {
   containerManager?: ContainerManager;
   maxConcurrentAgents?: number;
   permissionMcpBaseUrl?: string;
+  emailMcpBaseUrl?: string;
   approvalCoordinator?: ApprovalCoordinator;
 }
 
@@ -431,6 +441,7 @@ function getOrCreateAgentManager(config: AgentManagerConfig): AgentManager {
       containerManager: config.containerManager,
       maxConcurrentAgents: config.maxConcurrentAgents,
       permissionMcpBaseUrl: config.permissionMcpBaseUrl,
+      emailMcpBaseUrl: config.emailMcpBaseUrl,
       approvalCoordinator: config.approvalCoordinator,
     });
   }

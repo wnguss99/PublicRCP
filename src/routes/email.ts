@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SettingsRepository, ProjectRepository } from '../repositories';
-import { createEmailService } from '../services/email-service';
+import { createEmailService, EmailAttachment } from '../services/email-service';
+import { createZipArchive, cleanupArchive } from '../services/file-archive-service';
 import { asyncHandler, ValidationError } from '../utils';
 
 interface SendEmailBody {
@@ -8,6 +9,8 @@ interface SendEmailBody {
   body: string;
   to?: string;
   projectId?: string;
+  files?: string[];
+  archiveName?: string;
 }
 
 export interface EmailRouterDependencies {
@@ -61,12 +64,22 @@ export function createEmailRouter(deps: EmailRouterDependencies): Router {
     }
 
     const emailService = createEmailService(emailSettings);
+    const attachments: EmailAttachment[] = [];
+    let zipPath: string | null = null;
 
     try {
-      await emailService.sendEmail(to, subject, body.body);
+      if (body.files && body.files.length > 0) {
+        const archive = await createZipArchive(body.files, body.archiveName);
+        zipPath = archive.zipPath;
+        attachments.push({ filename: archive.filename, path: archive.zipPath });
+      }
+
+      await emailService.sendEmail(to, subject, body.body, attachments.length > 0 ? attachments : undefined);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Failed to send email: ' + (error instanceof Error ? error.message : String(error)) });
+    } finally {
+      if (zipPath) cleanupArchive(zipPath);
     }
   }));
 

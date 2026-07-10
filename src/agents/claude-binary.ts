@@ -50,6 +50,8 @@ export interface ClaudeBinaryConfig {
   approvalMode?: 'ask' | 'auto';
   /** Base URL of the embedded Claudito MCP HTTP server (e.g. http://127.0.0.1:3000/api/mcp/permission). */
   permissionMcpBaseUrl?: string;
+  /** Base URL of the embedded Claudito MCP email server (e.g. http://127.0.0.1:3000/api/mcp/email). */
+  emailMcpBaseUrl?: string;
 }
 
 export interface ClaudeBinaryStartOptions {
@@ -98,6 +100,7 @@ export class ClaudeBinary implements Agent {
   private readonly _chromeEnabled: boolean;
   private readonly _approvalMode: 'ask' | 'auto';
   private readonly _permissionMcpBaseUrl: string | null;
+  private readonly _emailMcpBaseUrl: string | null;
   private _sessionError: string | null = null;
   private _ralphLoopPhase: 'worker' | 'reviewer' | undefined;
   private _mcpConfigPath: string | null = null;
@@ -121,6 +124,7 @@ export class ClaudeBinary implements Agent {
     this._chromeEnabled = config.chromeEnabled ?? false;
     this._approvalMode = config.approvalMode ?? 'auto';
     this._permissionMcpBaseUrl = config.permissionMcpBaseUrl ?? null;
+    this._emailMcpBaseUrl = config.emailMcpBaseUrl ?? null;
 
     // Initialize process manager
     this.processManager = new ProcessManager(this.logger, config.processSpawner);
@@ -634,6 +638,15 @@ export class ClaudeBinary implements Agent {
         ]
       : [];
 
+    if (this._emailMcpBaseUrl) {
+      extraMcpServers.push({
+        name: 'claudito-email',
+        type: 'http',
+        url: `${this._emailMcpBaseUrl}/${this.projectId}`,
+        enabled: true,
+      } as McpServerConfig);
+    }
+
     const allMcp = [...(this._mcpServers || []), ...extraMcpServers];
     if (allMcp.length > 0) {
       this._mcpConfigPath = MessageBuilder.generateMcpConfig(allMcp, this.projectId);
@@ -654,7 +667,9 @@ export class ClaudeBinary implements Agent {
       agentTurns: this._limits.maxTurns,
       totalBudget: this._limits.totalBudget,
       cacheAnything: this._streaming.cacheAnything,
-      allowedTools: this._permissions.allowedTools,
+      allowedTools: this._emailMcpBaseUrl
+        ? [...(this._permissions.allowedTools || []), 'mcp__claudito-email__send_email']
+        : this._permissions.allowedTools,
       disallowedTools: this._permissions.disallowedTools,
       permissionMode: options.permissionMode || this._permissions.permissionMode,
       skipPermissions,
