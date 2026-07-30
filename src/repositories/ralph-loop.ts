@@ -109,7 +109,11 @@ export class FileRalphLoopRepository implements RalphLoopRepository {
     const previousOperation = this.writeQueues.get(key) || Promise.resolve();
 
     const newOperation = previousOperation.then(operation, operation);
-    this.writeQueues.set(key, newOperation.then(() => {}, () => {}));
+    const tracked = newOperation.then(
+      () => { this.writeQueues.delete(key); },
+      () => { this.writeQueues.delete(key); },
+    );
+    this.writeQueues.set(key, tracked);
 
     return newOperation;
   }

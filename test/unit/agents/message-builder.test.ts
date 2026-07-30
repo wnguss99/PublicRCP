@@ -91,8 +91,8 @@ describe('MessageBuilder', () => {
       const result1 = MessageBuilder.generateMcpConfig(servers, 'project1');
       const result2 = MessageBuilder.generateMcpConfig(servers, 'project2');
 
-      expect(result1).toContain('mcp-project1-');
-      expect(result2).toContain('mcp-project2-');
+      expect(result1).toContain('mcp-project1.json');
+      expect(result2).toContain('mcp-project2.json');
       expect(result1).not.toEqual(result2);
     });
 

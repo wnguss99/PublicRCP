@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { getLogger } from '../utils';
 
 export interface MilestoneItemRef {
   phaseId: string;
@@ -177,6 +178,7 @@ export class FileProjectRepository implements ProjectRepository {
   private readonly projectsDir: string;
   private readonly indexPath: string;
   private readonly fileSystem: FileSystem;
+  private readonly logger = getLogger('project-repository');
   private index: Map<string, ProjectIndexEntryWithPath> = new Map();
   private statusCache: Map<string, ProjectStatus> = new Map();
 
@@ -407,7 +409,10 @@ export class FileProjectRepository implements ProjectRepository {
 
       if (this.fileSystem.existsSync(legacyStatusPath)) {
         const statusData = this.fileSystem.readFileSync(legacyStatusPath, 'utf-8');
-        this.fileSystem.writeFileSync(path.join(centralDir, 'status.json'), statusData);
+        const centralStatusPath = path.join(centralDir, 'status.json');
+        const tempPath = `${centralStatusPath}.tmp`;
+        this.fileSystem.writeFileSync(tempPath, statusData);
+        this.fileSystem.renameSync(tempPath, centralStatusPath);
       }
     } catch {
       // Partial migration — clean up central dir so next loadStatus retries
@@ -717,8 +722,15 @@ export class FileProjectRepository implements ProjectRepository {
     const oldDataDir = this.getProjectDataDirById(id);
     const newDataDir = this.getProjectDataDirById(newId);
 
-    if (id !== newId && this.fileSystem.existsSync(oldDataDir) && !this.fileSystem.existsSync(newDataDir)) {
-      this.fileSystem.renameSync(oldDataDir, newDataDir);
+    if (id !== newId && this.fileSystem.existsSync(oldDataDir)) {
+      if (!this.fileSystem.existsSync(newDataDir)) {
+        this.fileSystem.renameSync(oldDataDir, newDataDir);
+      } else {
+        this.logger.warn('Target data directory already exists, skipping rename', {
+          oldDataDir,
+          newDataDir,
+        });
+      }
     }
 
     this.index.delete(id);

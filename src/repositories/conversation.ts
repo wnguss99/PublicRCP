@@ -407,13 +407,11 @@ export class FileConversationRepository implements ConversationRepository {
         break;
       }
 
-      const fullConv = await this.loadConversation(projectId, conv.id);
-
-      if (!fullConv) {
+      if (!conv.messages || conv.messages.length === 0) {
         continue;
       }
 
-      for (const message of fullConv.messages) {
+      for (const message of conv.messages) {
         if (results.length >= maxResults) {
           break;
         }
@@ -443,8 +441,8 @@ export class FileConversationRepository implements ConversationRepository {
           conversationId: conv.id,
           messageType: message.type,
           content: snippet,
-          createdAt: fullConv.createdAt,
-          label: fullConv.label,
+          createdAt: conv.createdAt,
+          label: conv.label,
         });
       }
     }
@@ -491,18 +489,17 @@ export class FileConversationRepository implements ConversationRepository {
       this.cache.set(cacheKey, { ...conversation });
       return conversation;
     } catch (err) {
-      this.logger.error('Corrupted conversation file, removing', {
+      this.logger.error('Corrupted conversation file, preserving as .corrupt', {
         projectId,
         conversationId,
         filePath,
         error: err instanceof Error ? err.message : String(err),
       });
 
-      // Delete the corrupted file
       try {
-        await this.fileSystem.unlink(filePath);
+        await fs.promises.rename(filePath, `${filePath}.corrupt`);
       } catch {
-        // Ignore deletion errors
+        // best-effort preservation
       }
 
       return null;

@@ -220,8 +220,7 @@ export class MessageBuilder {
     }
 
     const tempDir = getInstanceTempDir('claudito-mcp');
-    const timestamp = Date.now();
-    const configFileName = `mcp-${projectId}-${process.pid}-${timestamp}.json`;
+    const configFileName = `mcp-${projectId}.json`;
     const configPath = path.join(tempDir, configFileName);
 
     // Write the config file
@@ -245,14 +244,13 @@ export class MessageBuilder {
    * Build environment variables for Claude CLI.
    */
   static buildEnvironment(env?: Record<string, string>): Record<string, string> {
-    const result: Record<string, string> = {
-      ...process.env,
-      ...env,
-      // Force color output for better formatting
-      FORCE_COLOR: '1',
-      // Disable telemetry
-      ANTHROPIC_TELEMETRY: 'false',
-    };
+    const result: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) result[k] = v;
+    }
+    if (env) Object.assign(result, env);
+    result['FORCE_COLOR'] = '1';
+    result['ANTHROPIC_TELEMETRY'] = 'false';
 
     // Remove CLAUDECODE to prevent "nested session" errors when
     // claudito itself runs inside a Claude Code terminal session

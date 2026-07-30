@@ -186,7 +186,6 @@ describe('FileConversationRepository', () => {
       const result = await repository.findById('test-project', 'conv-123');
 
       expect(result).toBeNull();
-      expect(mockFileSystem.unlink).toHaveBeenCalled();
     });
   });
 

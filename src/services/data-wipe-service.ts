@@ -37,6 +37,12 @@ export class DefaultDataWipeService implements DataWipeService {
     const archiveTempDeleted = this.wipeArchiveTempData();
     const globalDataDeleted = this.wipeGlobalData();
 
+    try {
+      pruneStaleInstanceTempDirs();
+    } catch (error) {
+      this.logger.warn('Failed to prune stale instance temp dirs', { error: String(error) });
+    }
+
     return { projectsWiped, globalDataDeleted, mcpTempDeleted, archiveTempDeleted };
   }
 
@@ -57,15 +63,7 @@ export class DefaultDataWipeService implements DataWipeService {
    * alone left every previous run's directory behind for good.
    */
   private wipeMcpTempData(): boolean {
-    const deleted = this.deleteDirectoryRecursive(getInstanceTempDirPath('claudito-mcp'));
-
-    try {
-      pruneStaleInstanceTempDirs();
-    } catch (error) {
-      this.logger.warn('Failed to prune stale instance temp dirs', { error: String(error) });
-    }
-
-    return deleted;
+    return this.deleteDirectoryRecursive(getInstanceTempDirPath('claudito-mcp'));
   }
 
   private wipeArchiveTempData(): boolean {

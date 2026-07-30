@@ -26,8 +26,16 @@ export interface ArchiveResult {
 }
 
 export async function createZipArchive(filePaths: string[], archiveName?: string): Promise<ArchiveResult> {
-  const validFiles = filePaths.filter(f => fs.existsSync(f) && fs.statSync(f).isFile());
-  if (validFiles.length === 0) {
+  const fileStats: { filePath: string; stat: fs.Stats }[] = [];
+  for (const f of filePaths) {
+    try {
+      const stat = fs.statSync(f);
+      if (stat.isFile()) fileStats.push({ filePath: f, stat });
+    } catch {
+      // skip missing files
+    }
+  }
+  if (fileStats.length === 0) {
     throw new Error('No valid files found to archive');
   }
 
@@ -43,14 +51,13 @@ export async function createZipArchive(filePaths: string[], archiveName?: string
     let totalSize = 0;
 
     output.on('close', () => {
-      resolve({ zipPath, filename, fileCount: validFiles.length, totalSize });
+      resolve({ zipPath, filename, fileCount: fileStats.length, totalSize });
     });
 
     archive.on('error', reject);
     archive.pipe(output);
 
-    for (const filePath of validFiles) {
-      const stat = fs.statSync(filePath);
+    for (const { filePath, stat } of fileStats) {
       totalSize += stat.size;
       archive.file(filePath, { name: path.basename(filePath) });
     }
