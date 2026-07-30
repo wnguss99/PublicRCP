@@ -242,7 +242,7 @@ async function handleSendEmail(opts: {
   const shouldSplit = attachmentPath && needsSplit(attachmentPath);
 
   if (shouldSplit) {
-    const splitResult = splitArchive(attachmentPath);
+    const splitResult = await splitArchive(attachmentPath);
     const archiveBaseName = path.basename(attachmentPath);
     const splitGuide = [
       '',

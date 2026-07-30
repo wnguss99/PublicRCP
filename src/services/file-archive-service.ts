@@ -74,24 +74,39 @@ export interface SplitResult {
   originalSize: number;
 }
 
-const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
+export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 
 export function needsSplit(filePath: string): boolean {
   return fs.existsSync(filePath) && fs.statSync(filePath).size > MAX_ATTACHMENT_SIZE;
 }
 
-export function splitArchive(archivePath: string): SplitResult {
+export async function splitArchive(archivePath: string, chunkSize = MAX_ATTACHMENT_SIZE): Promise<SplitResult> {
   const fileSize = fs.statSync(archivePath).size;
-  const totalParts = Math.ceil(fileSize / MAX_ATTACHMENT_SIZE);
+  const totalParts = Math.ceil(fileSize / chunkSize);
   const parts: string[] = [];
 
-  const buf = fs.readFileSync(archivePath);
-  for (let i = 0; i < totalParts; i++) {
-    const start = i * MAX_ATTACHMENT_SIZE;
-    const end = Math.min(start + MAX_ATTACHMENT_SIZE, fileSize);
-    const partPath = `${archivePath}.${String(i + 1).padStart(3, '0')}`;
-    fs.writeFileSync(partPath, buf.subarray(start, end));
-    parts.push(partPath);
+  try {
+    for (let i = 0; i < totalParts; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, fileSize);
+      const partPath = `${archivePath}.${String(i + 1).padStart(3, '0')}`;
+
+      await new Promise<void>((resolve, reject) => {
+        const readStream = fs.createReadStream(archivePath, { start, end: end - 1 });
+        const writeStream = fs.createWriteStream(partPath);
+        readStream.pipe(writeStream);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+        readStream.on('error', reject);
+      });
+
+      parts.push(partPath);
+    }
+  } catch (err) {
+    for (const p of parts) {
+      try { fs.unlinkSync(p); } catch { /* best-effort */ }
+    }
+    throw err;
   }
 
   fs.unlinkSync(archivePath);
