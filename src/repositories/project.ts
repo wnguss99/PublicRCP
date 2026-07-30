@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 
 export interface MilestoneItemRef {
   phaseId: string;
@@ -140,6 +141,8 @@ export interface FileSystem {
   mkdirSync(dirPath: string, options: { recursive: boolean }): void;
   rmdirSync(dirPath: string, options: { recursive: boolean }): void;
   renameSync(oldPath: string, newPath: string): void;
+  /** Directory names only — used to rebuild the index from disk. */
+  readdirSync(dirPath: string): string[];
 }
 
 const defaultFileSystem: FileSystem = {
@@ -149,10 +152,20 @@ const defaultFileSystem: FileSystem = {
   mkdirSync: (dirPath, options) => fs.mkdirSync(dirPath, options),
   rmdirSync: (dirPath, options) => fs.rmSync(dirPath, options),
   renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
+  readdirSync: (dirPath) => fs.readdirSync(dirPath),
 };
 
+const MAX_ID_LENGTH = 80;
+
 export function generateIdFromPath(projectPath: string): string {
-  return projectPath.replace(/[^a-zA-Z0-9]/g, '_');
+  const raw = projectPath.replace(/[^a-zA-Z0-9]/g, '_');
+
+  if (raw.length <= MAX_ID_LENGTH) {
+    return raw;
+  }
+
+  const hash = createHash('sha256').update(projectPath).digest('hex').substring(0, 16);
+  return raw.substring(0, MAX_ID_LENGTH - 17) + '_' + hash;
 }
 
 // Extended index entry that includes project path for locating .claudito folder
@@ -181,6 +194,12 @@ export class FileProjectRepository implements ProjectRepository {
     return entry?.path || null;
   }
 
+  // Get the centralized data directory for a project (implements ProjectPathResolver)
+  getProjectDataDir(id: string): string | null {
+    if (!this.index.has(id)) return null;
+    return path.join(this.projectsDir, id);
+  }
+
   private ensureProjectsDir(): void {
     if (!this.fileSystem.existsSync(this.projectsDir)) {
       this.fileSystem.mkdirSync(this.projectsDir, { recursive: true });
@@ -189,6 +208,9 @@ export class FileProjectRepository implements ProjectRepository {
 
   private loadIndex(): void {
     if (!this.fileSystem.existsSync(this.indexPath)) {
+      // A missing index used to mean "no projects". Now that project data lives in
+      // {projectsDir}/{id}, the folders on disk are the better source of truth.
+      this.rebuildIndexFromDisk();
       return;
     }
 
@@ -196,24 +218,91 @@ export class FileProjectRepository implements ProjectRepository {
       const data = this.fileSystem.readFileSync(this.indexPath, 'utf-8');
       const entries = JSON.parse(data) as ProjectIndexEntryWithPath[];
       entries.forEach((entry) => this.index.set(entry.id, entry));
+      return;
     } catch {
-      // File corrupted or invalid, start fresh
+      // Fall through to recovery below.
+    }
+
+    // Starting fresh here used to be silent and unrecoverable: getProjectDataDir()
+    // returns null for anything not in the index, so an unreadable index made
+    // every project's conversations and ralph state unreachable even though the
+    // files were still on disk — and the next save overwrote the index with an
+    // empty list, making it permanent. Keep the bad file for forensics and rebuild
+    // from the project folders instead.
+    this.preserveCorruptIndex();
+    this.rebuildIndexFromDisk();
+
+    if (this.index.size > 0) {
+      this.saveIndex();
+    }
+  }
+
+  private preserveCorruptIndex(): void {
+    try {
+      this.fileSystem.renameSync(this.indexPath, `${this.indexPath}.corrupt`);
+    } catch {
+      // Nothing more we can do; the rebuild below is what matters.
+    }
+  }
+
+  /**
+   * Reconstruct index entries from `{projectsDir}/{id}/status.json`.
+   *
+   * Each status file carries the id, name and path, so the index is fully
+   * derivable from disk. The directory name wins over `status.id` because the
+   * directory is what getProjectDataDir() resolves to.
+   */
+  private rebuildIndexFromDisk(): void {
+    if (!this.fileSystem.existsSync(this.projectsDir)) {
+      return;
+    }
+
+    let names: string[] = [];
+
+    try {
+      const listed = this.fileSystem.readdirSync(this.projectsDir);
+      names = Array.isArray(listed) ? listed : [];
+    } catch {
+      return;
+    }
+
+    for (const name of names) {
+      const statusPath = path.join(this.projectsDir, name, 'status.json');
+
+      if (!this.fileSystem.existsSync(statusPath)) {
+        continue;
+      }
+
+      try {
+        const status = JSON.parse(this.fileSystem.readFileSync(statusPath, 'utf-8')) as ProjectStatus;
+
+        if (typeof status?.path !== 'string' || status.path === '') {
+          continue;
+        }
+
+        this.index.set(name, { id: name, name: status.name || name, path: status.path });
+      } catch {
+        // Skip unreadable project folders rather than aborting the whole rebuild.
+      }
     }
   }
 
   private saveIndex(): void {
     const entries = Array.from(this.index.values());
     const data = JSON.stringify(entries, null, 2);
-    this.fileSystem.writeFileSync(this.indexPath, data);
+    // Atomic, like saveStatus: a half-written index is the one file that can make
+    // every project's data unreachable at once.
+    const tempPath = `${this.indexPath}.tmp`;
+    this.fileSystem.writeFileSync(tempPath, data);
+    this.fileSystem.renameSync(tempPath, this.indexPath);
   }
 
-  // Project data is now stored in {project-root}/.claudito/
-  private getProjectDataDir(projectPath: string): string {
-    return path.join(projectPath, '.claudito');
+  private getProjectDataDirById(id: string): string {
+    return path.join(this.projectsDir, id);
   }
 
-  private getStatusPath(projectPath: string): string {
-    return path.join(this.getProjectDataDir(projectPath), 'status.json');
+  private getStatusPath(id: string): string {
+    return path.join(this.getProjectDataDirById(id), 'status.json');
   }
 
   private loadStatus(id: string): ProjectStatus | null {
@@ -229,7 +318,6 @@ export class FileProjectRepository implements ProjectRepository {
 
     // Handle backward compatibility: old entries may not have path
     if (!entry.path) {
-      // Try to load from old location and migrate
       const oldStatusPath = path.join(this.projectsDir, id, 'status.json');
 
       if (this.fileSystem.existsSync(oldStatusPath)) {
@@ -237,12 +325,8 @@ export class FileProjectRepository implements ProjectRepository {
           const data = this.fileSystem.readFileSync(oldStatusPath, 'utf-8');
           const status = JSON.parse(data) as ProjectStatus;
 
-          // Update index with path from status
           entry.path = status.path;
           this.saveIndex();
-
-          // Migrate data to new location
-          this.migrateProjectData(id, status.path);
 
           this.statusCache.set(id, status);
           return { ...status };
@@ -254,57 +338,92 @@ export class FileProjectRepository implements ProjectRepository {
       return null;
     }
 
-    const statusPath = this.getStatusPath(entry.path);
+    // Try centralized location first: {projectsDir}/{id}/status.json
+    const statusPath = this.getStatusPath(id);
 
-    if (!this.fileSystem.existsSync(statusPath)) {
-      return null;
+    if (this.fileSystem.existsSync(statusPath)) {
+      try {
+        const data = this.fileSystem.readFileSync(statusPath, 'utf-8');
+        const status = JSON.parse(data) as ProjectStatus;
+        this.statusCache.set(id, status);
+        return { ...status };
+      } catch {
+        return null;
+      }
     }
 
-    try {
-      const data = this.fileSystem.readFileSync(statusPath, 'utf-8');
-      const status = JSON.parse(data) as ProjectStatus;
-      this.statusCache.set(id, status);
-      return { ...status };
-    } catch {
-      return null;
+    // Fallback: legacy location {project-root}/.claudito/status.json
+    const legacyStatusPath = path.join(entry.path, '.claudito', 'status.json');
+
+    if (this.fileSystem.existsSync(legacyStatusPath)) {
+      try {
+        const data = this.fileSystem.readFileSync(legacyStatusPath, 'utf-8');
+        const status = JSON.parse(data) as ProjectStatus;
+
+        this.migrateFromLegacy(id, entry.path);
+
+        this.statusCache.set(id, status);
+        return { ...status };
+      } catch {
+        return null;
+      }
     }
+
+    return null;
   }
 
-  private migrateProjectData(id: string, projectPath: string): void {
-    const oldDir = path.join(this.projectsDir, id);
-    const newDir = this.getProjectDataDir(projectPath);
+  private migrateFromLegacy(id: string, projectPath: string): void {
+    const legacyDir = path.join(projectPath, '.claudito');
 
-    if (!this.fileSystem.existsSync(oldDir)) {
+    if (!this.fileSystem.existsSync(legacyDir)) {
       return;
     }
 
-    // Create new directory
-    if (!this.fileSystem.existsSync(newDir)) {
-      this.fileSystem.mkdirSync(newDir, { recursive: true });
+    const centralDir = this.getProjectDataDirById(id);
+
+    if (!this.fileSystem.existsSync(centralDir)) {
+      this.fileSystem.mkdirSync(centralDir, { recursive: true });
     }
 
-    // Copy status.json
-    const oldStatusPath = path.join(oldDir, 'status.json');
-
-    if (this.fileSystem.existsSync(oldStatusPath)) {
-      const statusData = this.fileSystem.readFileSync(oldStatusPath, 'utf-8');
-      this.fileSystem.writeFileSync(path.join(newDir, 'status.json'), statusData);
-    }
-
-    // Copy conversations directory if it exists
-    const oldConvDir = path.join(oldDir, 'conversations');
-    const newConvDir = path.join(newDir, 'conversations');
-
-    if (this.fileSystem.existsSync(oldConvDir)) {
-      this.copyDirectory(oldConvDir, newConvDir);
-    }
-
-    // Remove old directory after successful migration
     try {
-      this.fileSystem.rmdirSync(oldDir, { recursive: true });
+      // Copy conversations and ralph FIRST — if these fail, status.json
+      // won't exist in central, so the next loadStatus will retry migration.
+      const legacyConvDir = path.join(legacyDir, 'conversations');
+      const centralConvDir = path.join(centralDir, 'conversations');
+
+      if (this.fileSystem.existsSync(legacyConvDir)) {
+        this.copyDirectory(legacyConvDir, centralConvDir);
+      }
+
+      const legacyRalphDir = path.join(legacyDir, 'ralph');
+      const centralRalphDir = path.join(centralDir, 'ralph');
+
+      if (this.fileSystem.existsSync(legacyRalphDir)) {
+        this.copyDirectory(legacyRalphDir, centralRalphDir);
+      }
+
+      // Copy status.json LAST — its presence signals migration is complete.
+      const legacyStatusPath = path.join(legacyDir, 'status.json');
+
+      if (this.fileSystem.existsSync(legacyStatusPath)) {
+        const statusData = this.fileSystem.readFileSync(legacyStatusPath, 'utf-8');
+        this.fileSystem.writeFileSync(path.join(centralDir, 'status.json'), statusData);
+      }
     } catch {
-      // Ignore cleanup errors
+      // Partial migration — clean up central dir so next loadStatus retries
+      try {
+        this.fileSystem.rmdirSync(centralDir, { recursive: true });
+      } catch {
+        // best-effort cleanup
+      }
+      return;
     }
+
+    // The legacy dir is intentionally left in place. With several instances
+    // running (one CLAUDITO_HOME per port), two of them can hold the same
+    // project path in their index; deleting the legacy dir after the first
+    // migration would silently strip that project's history from every other
+    // instance. Keeping it lets each instance migrate independently.
   }
 
   private copyDirectory(src: string, dest: string): void {
@@ -312,7 +431,6 @@ export class FileProjectRepository implements ProjectRepository {
       this.fileSystem.mkdirSync(dest, { recursive: true });
     }
 
-    // Read directory contents using fs directly (sync)
     const entries = fs.readdirSync(src, { withFileTypes: true });
 
     for (const entry of entries) {
@@ -322,14 +440,13 @@ export class FileProjectRepository implements ProjectRepository {
       if (entry.isDirectory()) {
         this.copyDirectory(srcPath, destPath);
       } else {
-        const content = this.fileSystem.readFileSync(srcPath, 'utf-8');
-        this.fileSystem.writeFileSync(destPath, content);
+        fs.copyFileSync(srcPath, destPath);
       }
     }
   }
 
   private saveStatus(status: ProjectStatus): void {
-    const dataDir = this.getProjectDataDir(status.path);
+    const dataDir = this.getProjectDataDirById(status.id);
 
     if (!this.fileSystem.existsSync(dataDir)) {
       this.fileSystem.mkdirSync(dataDir, { recursive: true });
@@ -337,9 +454,8 @@ export class FileProjectRepository implements ProjectRepository {
 
     status.updatedAt = new Date().toISOString();
     this.statusCache.set(status.id, status);
-    const statusPath = this.getStatusPath(status.path);
+    const statusPath = this.getStatusPath(status.id);
     const data = JSON.stringify(status, null, 2);
-    // Atomic write: write to temp file, then rename
     const tempPath = `${statusPath}.tmp`;
     this.fileSystem.writeFileSync(tempPath, data);
     this.fileSystem.renameSync(tempPath, statusPath);
@@ -598,6 +714,13 @@ export class FileProjectRepository implements ProjectRepository {
 
     const newId = generateIdFromPath(newPath);
 
+    const oldDataDir = this.getProjectDataDirById(id);
+    const newDataDir = this.getProjectDataDirById(newId);
+
+    if (id !== newId && this.fileSystem.existsSync(oldDataDir) && !this.fileSystem.existsSync(newDataDir)) {
+      this.fileSystem.renameSync(oldDataDir, newDataDir);
+    }
+
     this.index.delete(id);
     this.statusCache.delete(id);
 
@@ -629,8 +752,7 @@ export class FileProjectRepository implements ProjectRepository {
     this.saveIndex();
     this.statusCache.delete(id);
 
-    // Delete the .claudito folder in the project root
-    const dataDir = this.getProjectDataDir(entry.path);
+    const dataDir = this.getProjectDataDirById(id);
 
     if (this.fileSystem.existsSync(dataDir)) {
       this.fileSystem.rmdirSync(dataDir, { recursive: true });

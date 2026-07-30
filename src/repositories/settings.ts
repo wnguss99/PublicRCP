@@ -496,6 +496,8 @@ export interface FileSystemAdapter {
   writeFileSync(filePath: string, data: string): void;
   existsSync(filePath: string): boolean;
   mkdirSync(dirPath: string, options: { recursive: boolean }): void;
+  /** Optional so existing adapters keep working; used for atomic saves. */
+  renameSync?(oldPath: string, newPath: string): void;
 }
 
 const defaultFileSystem: FileSystemAdapter = {
@@ -503,6 +505,7 @@ const defaultFileSystem: FileSystemAdapter = {
   writeFileSync: (filePath, data) => fs.writeFileSync(filePath, data),
   existsSync: (filePath) => fs.existsSync(filePath),
   mkdirSync: (dirPath, options) => fs.mkdirSync(dirPath, options),
+  renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
 };
 
 export class FileSettingsRepository implements SettingsRepository {
@@ -533,7 +536,23 @@ export class FileSettingsRepository implements SettingsRepository {
       const parsed = JSON.parse(data) as Partial<GlobalSettings>;
       return this.mergeWithDefaults(parsed);
     } catch {
+      // Falling back to defaults is the only way to keep the app usable, but the
+      // unreadable file must not be overwritten by the next save — it holds the
+      // only copy of the user's tokens. Move it aside so it can be recovered.
+      this.preserveCorruptSettings();
       return { ...DEFAULT_SETTINGS };
+    }
+  }
+
+  private preserveCorruptSettings(): void {
+    if (!this.fileSystem.renameSync) {
+      return;
+    }
+
+    try {
+      this.fileSystem.renameSync(this.filePath, `${this.filePath}.corrupt`);
+    } catch {
+      // Best effort — defaults are already in place.
     }
   }
 
@@ -688,6 +707,18 @@ export class FileSettingsRepository implements SettingsRepository {
 
   private saveToFile(): void {
     const data = JSON.stringify(this.settings, null, 2);
+
+    // Atomic when the adapter supports it: a half-written settings.json parses as
+    // invalid, and loadFromFile() then silently substitutes DEFAULT_SETTINGS —
+    // losing Slack/e-mail credentials, docker config and agent profiles, which the
+    // next save would make permanent.
+    if (this.fileSystem.renameSync) {
+      const tempPath = `${this.filePath}.tmp`;
+      this.fileSystem.writeFileSync(tempPath, data);
+      this.fileSystem.renameSync(tempPath, this.filePath);
+      return;
+    }
+
     this.fileSystem.writeFileSync(this.filePath, data);
   }
 

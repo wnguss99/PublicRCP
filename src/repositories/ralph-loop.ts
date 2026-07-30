@@ -68,7 +68,7 @@ export function generateTaskId(): string {
 /**
  * File-based Ralph Loop repository
  *
- * Stores data in: {project-root}/.claudito/ralph/{taskId}/
+ * Stores data in: {CLAUDITO_HOME}/projects/{projectId}/ralph/{taskId}/
  */
 export class FileRalphLoopRepository implements RalphLoopRepository {
   private readonly projectPathResolver: ProjectPathResolver;
@@ -119,13 +119,13 @@ export class FileRalphLoopRepository implements RalphLoopRepository {
   }
 
   private getRalphDir(projectId: string): string | null {
-    const projectPath = this.projectPathResolver.getProjectPath(projectId);
+    const dataDir = this.projectPathResolver.getProjectDataDir(projectId);
 
-    if (!projectPath) {
+    if (!dataDir) {
       return null;
     }
 
-    return path.join(projectPath, '.claudito', 'ralph');
+    return path.join(dataDir, 'ralph');
   }
 
   private getTaskDir(projectId: string, taskId: string): string | null {

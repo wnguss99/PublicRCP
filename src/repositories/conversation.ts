@@ -143,15 +143,8 @@ export class FileConversationRepository implements ConversationRepository {
     return this.writeQueues.withLock(key, operation);
   }
 
-  // Conversations are now stored in {project-root}/.claudito/conversations/
   private getProjectDataDir(projectId: string): string | null {
-    const projectPath = this.projectPathResolver.getProjectPath(projectId);
-
-    if (!projectPath) {
-      return null;
-    }
-
-    return path.join(projectPath, '.claudito');
+    return this.projectPathResolver.getProjectDataDir(projectId);
   }
 
   private getConversationsDir(projectId: string): string | null {

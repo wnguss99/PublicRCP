@@ -32,6 +32,8 @@ npm-debug.log*
 
 # PM2 runtime
 .pm2/
+ecosystem.config.js
+.claudito-instances/
 
 # Test coverage
 coverage/

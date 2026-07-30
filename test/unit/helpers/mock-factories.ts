@@ -101,6 +101,16 @@ export const DEFAULT_TEST_SETTINGS: GlobalSettings = {
     networkMode: 'bridge',
   },
   agentProfiles: [{ ...DEFAULT_AGENT_PROFILE }],
+  email: {
+    enabled: false,
+    smtpHost: '',
+    smtpPort: 587,
+    smtpSecure: false,
+    smtpUser: '',
+    smtpPassword: '',
+    fromAddress: '',
+    defaultRecipient: '',
+  },
 };
 
 export const DEFAULT_CLAUDE_PERMISSIONS: ClaudePermissions = {
@@ -603,13 +613,18 @@ export function createMockConversationFileSystem(): jest.Mocked<ConversationFile
 // ============================================================================
 
 export function createMockProjectPathResolver(
-  paths?: Record<string, string>
+  paths?: Record<string, string>,
+  dataDirs?: Record<string, string>
 ): jest.Mocked<ProjectPathResolver> {
   const projectPaths = new Map(Object.entries(paths || {}));
+  const projectDataDirs = new Map(Object.entries(dataDirs || {}));
 
   return {
     getProjectPath: jest.fn().mockImplementation((projectId: string) => {
       return projectPaths.get(projectId) || null;
+    }),
+    getProjectDataDir: jest.fn().mockImplementation((projectId: string) => {
+      return projectDataDirs.get(projectId) || null;
     }),
   };
 }

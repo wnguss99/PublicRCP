@@ -20,6 +20,7 @@ function createMockDataWipeService(): jest.Mocked<DataWipeService> {
       projectsWiped: 2,
       globalDataDeleted: true,
       mcpTempDeleted: true,
+      archiveTempDeleted: true,
     }),
   };
 }
@@ -765,6 +766,7 @@ describe('SettingsRouter', () => {
         projectsWiped: 2,
         globalDataDeleted: true,
         mcpTempDeleted: true,
+        archiveTempDeleted: true,
       });
     });
 

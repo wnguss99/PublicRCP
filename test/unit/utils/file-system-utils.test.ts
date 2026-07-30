@@ -79,6 +79,7 @@ describe('file-system-utils', () => {
         mkdirSync: jest.fn(),
         rmdirSync: jest.fn(),
         renameSync: jest.fn(),
+        readdirSync: jest.fn().mockReturnValue([]),
       };
 
       ensureDirectoryExists('/existing/dir', mockFileSystem);
@@ -95,6 +96,7 @@ describe('file-system-utils', () => {
         mkdirSync: jest.fn(),
         rmdirSync: jest.fn(),
         renameSync: jest.fn(),
+        readdirSync: jest.fn().mockReturnValue([]),
       };
 
       ensureDirectoryExists('/new/dir', mockFileSystem);

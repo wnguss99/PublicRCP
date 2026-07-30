@@ -1,8 +1,46 @@
 import { AgentMessage, AgentMode } from './agent';
 import { McpServerConfig } from '../repositories/settings';
+import { getLogger } from '../utils/logger';
+import { getInstanceTempDir } from '../utils/temp-dirs';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+
+/**
+ * Anthropic API keys are ~100 characters. Anything shorter cannot authenticate —
+ * this host had `ANTHROPIC_API_KEY=sk-ant-...`, the literal placeholder from the
+ * docs, in the user environment.
+ */
+const MIN_API_KEY_LENGTH = 40;
+
+/**
+ * Explain why an ANTHROPIC_API_KEY value cannot work, or null when it looks real.
+ *
+ * The Claude CLI prefers this variable over the logged-in claude.ai subscription,
+ * so a bogus value turns every message into "Invalid API key · Fix external API
+ * key" while `claude` still reports itself as logged in. Exported so the startup
+ * self-check and /api/health can report the same verdict the spawn path applies.
+ */
+export function describeUnusableApiKey(value: string | undefined): string | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed === '') {
+    return 'ANTHROPIC_API_KEY is set but empty';
+  }
+
+  if (!trimmed.startsWith('sk-')) {
+    return 'ANTHROPIC_API_KEY does not start with sk-';
+  }
+
+  if (trimmed.length < MIN_API_KEY_LENGTH) {
+    return `ANTHROPIC_API_KEY is only ${trimmed.length} characters — a real key is ~100`;
+  }
+
+  return null;
+}
 
 /**
  * Utilities for building and formatting agent messages.
@@ -181,15 +219,9 @@ export class MessageBuilder {
       }
     }
 
-    // Create temp directory if it doesn't exist
-    const tempDir = path.join(os.tmpdir(), 'claudito-mcp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Generate a unique filename for this project/session
+    const tempDir = getInstanceTempDir('claudito-mcp');
     const timestamp = Date.now();
-    const configFileName = `mcp-${projectId}-${timestamp}.json`;
+    const configFileName = `mcp-${projectId}-${process.pid}-${timestamp}.json`;
     const configPath = path.join(tempDir, configFileName);
 
     // Write the config file
@@ -226,7 +258,30 @@ export class MessageBuilder {
     // claudito itself runs inside a Claude Code terminal session
     delete result['CLAUDECODE'];
 
+    MessageBuilder.dropUnusableApiKey(result);
+
     return result;
+  }
+
+  /**
+   * Strip an ANTHROPIC_API_KEY that cannot possibly authenticate.
+   *
+   * The CLI prefers this variable over the logged-in claude.ai subscription, so a
+   * bogus value makes every message fail with "Invalid API key · Fix external
+   * API key" even though `claude` is signed in. Dropping it lets the CLI fall
+   * back to the subscription; a real key is left untouched.
+   */
+  private static dropUnusableApiKey(env: Record<string, string>): void {
+    const reason = describeUnusableApiKey(env['ANTHROPIC_API_KEY']);
+
+    if (reason === null) {
+      return;
+    }
+
+    delete env['ANTHROPIC_API_KEY'];
+    getLogger('message-builder').warn('Ignoring unusable ANTHROPIC_API_KEY; falling back to the Claude CLI login', {
+      reason,
+    });
   }
 
   /**

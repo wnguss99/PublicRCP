@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
-import { ChildProcess, execFile } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import {
   ProcessManager,
   ProcessSpawner,
+  defaultSpawner,
 } from '../../../src/agents/process-manager';
 import { Logger } from '../../../src/utils';
 
@@ -11,10 +12,12 @@ jest.mock('child_process', () => {
   return {
     ...actual,
     execFile: jest.fn((cmd: string, args: string[], cb: (err: Error | null) => void) => cb(null)),
+    spawn: jest.fn(() => new EventEmitter()),
   };
 });
 
 const mockExecFile = execFile as unknown as jest.Mock;
+const mockSpawn = spawn as unknown as jest.Mock;
 
 function createMockLogger(): jest.Mocked<Logger> {
   const mock: jest.Mocked<Logger> = {
@@ -545,6 +548,56 @@ describe('ProcessManager', () => {
       pm.spawn('claude', [], '/tmp');
 
       await pm.stop();
+    });
+  });
+
+  // 2026-07-30 regression. defaultSpawner used to pass
+  // `{ ...process.env, ...options.env }`, which re-added every variable the
+  // caller had deliberately deleted. That silently defeated both the
+  // `delete CLAUDECODE` guard and the ANTHROPIC_API_KEY sanitisation, so a
+  // placeholder key (`sk-ant-...`) reached the CLI and every message failed with
+  // "Invalid API key · Fix external API key".
+  describe('defaultSpawner environment', () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+
+    beforeEach(() => {
+      mockSpawn.mockClear();
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-...';
+    });
+
+    afterEach(() => {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    });
+
+    it('must not resurrect variables the caller removed from env', () => {
+      const sanitized = { ...process.env } as Record<string, string>;
+      delete sanitized['ANTHROPIC_API_KEY'];
+      delete sanitized['CLAUDECODE'];
+
+      defaultSpawner.spawn('claude', [], { cwd: '/tmp', shell: false, windowsHide: true, env: sanitized });
+
+      const passedEnv = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+      expect(passedEnv).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(passedEnv).not.toHaveProperty('CLAUDECODE');
+    });
+
+    it('should pass the provided env through unchanged', () => {
+      const sanitized = { PATH: '/usr/bin', MARKER: 'kept' } as Record<string, string>;
+
+      defaultSpawner.spawn('claude', [], { cwd: '/tmp', shell: false, windowsHide: true, env: sanitized });
+
+      expect(mockSpawn.mock.calls[0][2].env).toEqual(sanitized);
+    });
+
+    it('should fall back to process.env when no env is given', () => {
+      defaultSpawner.spawn('claude', [], { cwd: '/tmp', shell: false, windowsHide: true });
+
+      const passedEnv = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+      expect(passedEnv.ANTHROPIC_API_KEY).toBe('sk-ant-...');
     });
   });
 });

@@ -34,10 +34,16 @@ describe('FileConversationRepository', () => {
 
   beforeEach(() => {
     mockFileSystem = createMockConversationFileSystem();
-    mockPathResolver = createMockProjectPathResolver({
-      'test-project': '/test/path',
-      'project-2': '/test/path2',
-    });
+    mockPathResolver = createMockProjectPathResolver(
+      {
+        'test-project': '/test/path',
+        'project-2': '/test/path2',
+      },
+      {
+        'test-project': '/data/projects/test-project',
+        'project-2': '/data/projects/project-2',
+      },
+    );
 
     const config: FileConversationRepositoryConfig = {
       projectPathResolver: mockPathResolver,

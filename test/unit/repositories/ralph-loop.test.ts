@@ -19,10 +19,16 @@ describe('FileRalphLoopRepository', () => {
 
   beforeEach(() => {
     mockFileSystem = createMockRalphLoopFileSystem();
-    mockPathResolver = createMockProjectPathResolver({
-      'test-project': '/test/path',
-      'project-2': '/test/path2',
-    });
+    mockPathResolver = createMockProjectPathResolver(
+      {
+        'test-project': '/test/path',
+        'project-2': '/test/path2',
+      },
+      {
+        'test-project': '/data/projects/test-project',
+        'project-2': '/data/projects/project-2',
+      },
+    );
 
     const config: FileRalphLoopRepositoryConfig = {
       projectPathResolver: mockPathResolver,
@@ -87,7 +93,7 @@ describe('FileRalphLoopRepository', () => {
       await repository.create(initialState);
 
       expect(mockFileSystem.mkdir).toHaveBeenCalledWith(
-        expect.stringContaining('.claudito')
+        expect.stringContaining('ralph')
       );
       expect(mockFileSystem.mkdir).toHaveBeenCalledWith(
         expect.stringContaining('summaries')

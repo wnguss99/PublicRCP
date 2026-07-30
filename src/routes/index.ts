@@ -1,6 +1,6 @@
 import path from 'path';
 import { Router } from 'express';
-import { createFilesystemRouter, createFilesystemService } from './filesystem';
+import { createFilesystemRouter, createFilesystemService, createFsPathPolicy } from './filesystem';
 import { createProjectsRouter } from './projects';
 import { createSettingsRouter } from './settings';
 import {
@@ -36,6 +36,7 @@ import { createSlackCommandService } from '../services/slack-command-service';
 import { DefaultSlackThreadTracker, SlackThreadTracker } from '../services/slack-thread-tracker';
 import { createIntegrationsRouter } from './integrations';
 import { DefaultAgentManager, AgentManager } from '../agents';
+import { describeUnusableApiKey } from '../agents/message-builder';
 import { DefaultDockerService, DefaultContainerManager, DefaultDockerCommandRunner, DefaultImageManager } from '../services/docker';
 import { DockerService, ContainerManager, ImageManager } from '../services/docker/types';
 import { createDockerRouter } from './docker';
@@ -122,7 +123,10 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
 
   // Approval coordinator + MCP permission server (must exist before AgentManager so the URL is known)
   const approvalCoordinator = getApprovalCoordinator();
-  const mcpPort = deps.serverPort ?? Number(process.env.PORT) ?? 3000;
+  // `??` does not catch NaN, so Number(undefined) would have produced the URL
+  // http://127.0.0.1:NaN/... whenever both serverPort and PORT were absent.
+  const envPort = Number(process.env.PORT);
+  const mcpPort = deps.serverPort ?? (Number.isFinite(envPort) ? envPort : 3000);
   // Claude CLI runs on the same host as Claudito, so loopback is always reachable.
   const permissionMcpBaseUrl = `http://127.0.0.1:${mcpPort}/api/mcp/permission`;
   const emailMcpBaseUrl = `http://127.0.0.1:${mcpPort}/api/mcp/email`;
@@ -173,23 +177,48 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
 
   // Health check (public; optionally checks auth when ?auth=1)
   router.get('/health', async (req, res) => {
-    if (req.query.auth === '1' && deps.authService) {
-      const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+    const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+    const authenticated = !deps.authService || (!!sessionId && deps.authService.validateSession(sessionId));
 
-      if (!sessionId || !deps.authService.validateSession(sessionId)) {
-        res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
-        return;
-      }
+    if (req.query.auth === '1' && !authenticated) {
+      res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
+      return;
     }
 
     if (!cachedClaudeCliInfo) {
       cachedClaudeCliInfo = await claudeCliInfoPromise;
     }
 
-    res.json({
+    // A misconfigured ANTHROPIC_API_KEY breaks every chat while the CLI still
+    // reports itself logged in, so it has to be visible without digging through
+    // logs. Only the reason is exposed — never the value.
+    const apiKeyProblem = describeUnusableApiKey(process.env.ANTHROPIC_API_KEY);
+
+    const publicPayload = {
       status: 'ok',
       version: packageJson.version,
       timestamp: new Date().toISOString(),
+      port: Number(process.env.PORT) || 3000,
+      authWarning: apiKeyProblem === null ? null : 'UNUSABLE_ANTHROPIC_API_KEY',
+    };
+
+    // The endpoint has to stay reachable without a cookie (login page + the
+    // restart poller use it), but the server binds 0.0.0.0, so anyone on the
+    // LAN/Tailnet can hit it. Operator detail — data directory, shell state and
+    // the Claude account (e-mail, org id, subscription) — is only for a
+    // logged-in caller.
+    if (!authenticated) {
+      res.json({
+        ...publicPayload,
+        claudeCli: { installed: cachedClaudeCliInfo?.installed ?? false },
+      });
+      return;
+    }
+
+    res.json({
+      ...publicPayload,
+      authWarningDetail: apiKeyProblem,
+      clauditoHome: process.env.CLAUDITO_HOME || null,
       shellEnabled: deps.shellEnabled !== false,
       claudeCli: cachedClaudeCliInfo,
     });
@@ -287,9 +316,15 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     res.json(clients);
   });
 
-  // Filesystem routes
+  // Filesystem routes. Content reads and every mutation are confined to the
+  // registered project paths (plus CLAUDITO_FS_ROOTS) so one instance's user
+  // cannot reach another's data — or the rest of the machine — through /api/fs.
   const filesystemService = createFilesystemService();
-  router.use('/fs', createFilesystemRouter(filesystemService));
+  const fsPathPolicy = createFsPathPolicy(async () => {
+    const projects = await projectRepository.findAll();
+    return projects.map((project) => project.path).filter(Boolean);
+  });
+  router.use('/fs', createFilesystemRouter(filesystemService, fsPathPolicy));
 
   // Settings routes
   const dataWipeService = new DefaultDataWipeService({

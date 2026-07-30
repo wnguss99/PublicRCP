@@ -217,6 +217,84 @@ describe('AuthService', () => {
     });
   });
 
+  describe('Session persistence across restarts', () => {
+    // A tiny in-memory stand-in for {CLAUDITO_HOME}/sessions.json so a "restart"
+    // is just a second DefaultAuthService reading what the first one wrote.
+    interface MemoryStore {
+      data: unknown;
+      load: jest.Mock;
+      save: jest.Mock;
+    }
+
+    function createMemoryStore(): MemoryStore {
+      const store: MemoryStore = {
+        data: null,
+        load: jest.fn((): unknown => store.data),
+        save: jest.fn((value: unknown): void => {
+          store.data = value;
+        }),
+      };
+      return store;
+    }
+
+    beforeEach(() => {
+      process.env.CLAUDITO_USERNAME = 'persist-user';
+      process.env.CLAUDITO_PASSWORD = 'persist-pass-123';
+    });
+
+    it('should keep a session valid after a restart', () => {
+      const store = createMemoryStore();
+      const before = new DefaultAuthService(store as never);
+      const session = before.createSession();
+
+      const afterRestart = new DefaultAuthService(store as never);
+
+      expect(afterRestart.validateSession(session.id)).toBe(true);
+    });
+
+    it('should drop persisted sessions when the password changes', () => {
+      const store = createMemoryStore();
+      const before = new DefaultAuthService(store as never);
+      const session = before.createSession();
+
+      // Operator rotates a leaked password — the cookie it issued must die.
+      process.env.CLAUDITO_PASSWORD = 'rotated-pass-456';
+      const afterRotation = new DefaultAuthService(store as never);
+
+      expect(afterRotation.validateSession(session.id)).toBe(false);
+    });
+
+    it('should not restore an already expired session', () => {
+      const store = createMemoryStore();
+      store.data = {
+        credentialFingerprint: 'does-not-matter',
+        sessions: [{ id: 'stale', createdAt: 0, expiresAt: Date.now() - 1000 }],
+      };
+
+      const service = new DefaultAuthService(store as never);
+
+      expect(service.validateSession('stale')).toBe(false);
+    });
+
+    it('should invalidate across a restart once logged out', () => {
+      const store = createMemoryStore();
+      const before = new DefaultAuthService(store as never);
+      const session = before.createSession();
+      before.invalidateSession(session.id);
+
+      const afterRestart = new DefaultAuthService(store as never);
+
+      expect(afterRestart.validateSession(session.id)).toBe(false);
+    });
+
+    it('should work when no store is available', () => {
+      const service = new DefaultAuthService(null);
+      const session = service.createSession();
+
+      expect(service.validateSession(session.id)).toBe(true);
+    });
+  });
+
   describe('Environment variable credentials', () => {
     it('should use CLAUDITO_USERNAME and CLAUDITO_PASSWORD when both are set', () => {
       process.env.CLAUDITO_USERNAME = 'custom-user';

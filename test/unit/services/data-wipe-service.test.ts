@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { DefaultDataWipeService } from '../../../src/services/data-wipe-service';
-import { ProjectRepository, ProjectStatus } from '../../../src/repositories';
 import { createMockProjectRepository } from '../helpers/mock-factories';
 
 jest.mock('fs');
@@ -11,26 +10,7 @@ jest.mock('os');
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockOs = os as jest.Mocked<typeof os>;
 
-function createProject(id: string, projectPath: string): ProjectStatus {
-  return {
-    id,
-    name: `Project ${id}`,
-    path: projectPath,
-    status: 'stopped',
-    currentConversationId: null,
-    nextItem: null,
-    currentItem: null,
-    lastContextUsage: null,
-    permissionOverrides: null,
-    modelOverride: null,
-    mcpOverrides: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
 describe('DefaultDataWipeService', () => {
-  let mockProjectRepository: jest.Mocked<ProjectRepository>;
   let service: DefaultDataWipeService;
   const dataDirectory = '/home/user/.claudito';
 
@@ -40,29 +20,12 @@ describe('DefaultDataWipeService', () => {
     mockFs.existsSync.mockReturnValue(true);
     mockFs.rmSync.mockImplementation(() => undefined);
 
-    mockProjectRepository = createMockProjectRepository([
-      createProject('proj-1', '/projects/alpha'),
-      createProject('proj-2', '/projects/beta'),
-    ]);
+    const mockProjectRepository = createMockProjectRepository([]);
 
     service = new DefaultDataWipeService({
       projectRepository: mockProjectRepository,
       dataDirectory,
     });
-  });
-
-  it('should wipe per-project .claudito directories', async () => {
-    const summary = await service.wipeAll();
-
-    expect(mockFs.rmSync).toHaveBeenCalledWith(
-      path.join('/projects/alpha', '.claudito'),
-      { recursive: true, force: true },
-    );
-    expect(mockFs.rmSync).toHaveBeenCalledWith(
-      path.join('/projects/beta', '.claudito'),
-      { recursive: true, force: true },
-    );
-    expect(summary.projectsWiped).toBe(2);
   });
 
   it('should delete the global data directory', async () => {
@@ -75,14 +38,60 @@ describe('DefaultDataWipeService', () => {
     expect(summary.globalDataDeleted).toBe(true);
   });
 
-  it('should delete the MCP temp directory', async () => {
+  it('should delete the PID-scoped MCP temp directory', async () => {
     const summary = await service.wipeAll();
 
     expect(mockFs.rmSync).toHaveBeenCalledWith(
-      path.join('/tmp', 'claudito-mcp'),
+      path.join('/tmp', 'claudito-mcp', String(process.pid)),
       { recursive: true, force: true },
     );
     expect(summary.mcpTempDeleted).toBe(true);
+  });
+
+  it('should delete the PID-scoped archive temp directory', async () => {
+    const summary = await service.wipeAll();
+
+    expect(mockFs.rmSync).toHaveBeenCalledWith(
+      path.join('/tmp', 'claudito-archives', String(process.pid)),
+      { recursive: true, force: true },
+    );
+    expect(summary.archiveTempDeleted).toBe(true);
+  });
+
+  it('should report 0 projects wiped when there are none', async () => {
+    const summary = await service.wipeAll();
+    expect(summary.projectsWiped).toBe(0);
+  });
+
+  it('should report how many projects the wipe took with it', async () => {
+    // Project data lives inside the data directory now, so deleting it removes
+    // the projects too. The summary used to be hardcoded to 0 and always lied.
+    const withProjects = new DefaultDataWipeService({
+      projectRepository: createMockProjectRepository([
+        { id: 'a', name: 'A', path: '/p/a' },
+        { id: 'b', name: 'B', path: '/p/b' },
+      ] as never),
+      dataDirectory,
+    });
+
+    const summary = await withProjects.wipeAll();
+
+    expect(summary.projectsWiped).toBe(2);
+  });
+
+  it('should still wipe when the project index cannot be read', async () => {
+    const failing = new DefaultDataWipeService({
+      projectRepository: {
+        ...createMockProjectRepository([]),
+        findAll: jest.fn().mockRejectedValue(new Error('index unreadable')),
+      } as never,
+      dataDirectory,
+    });
+
+    const summary = await failing.wipeAll();
+
+    expect(summary.projectsWiped).toBe(0);
+    expect(summary.globalDataDeleted).toBe(true);
   });
 
   it('should handle missing directories gracefully', async () => {
@@ -93,6 +102,7 @@ describe('DefaultDataWipeService', () => {
     expect(summary.projectsWiped).toBe(0);
     expect(summary.globalDataDeleted).toBe(false);
     expect(summary.mcpTempDeleted).toBe(false);
+    expect(summary.archiveTempDeleted).toBe(false);
     expect(mockFs.rmSync).not.toHaveBeenCalled();
   });
 
@@ -106,30 +116,6 @@ describe('DefaultDataWipeService', () => {
     expect(summary.projectsWiped).toBe(0);
     expect(summary.globalDataDeleted).toBe(false);
     expect(summary.mcpTempDeleted).toBe(false);
-  });
-
-  it('should handle project repository errors gracefully', async () => {
-    mockProjectRepository.findAll.mockRejectedValue(new Error('Corrupt index'));
-
-    const summary = await service.wipeAll();
-
-    // Per-project wipe skipped, but global and MCP still wiped
-    expect(summary.projectsWiped).toBe(0);
-    expect(summary.globalDataDeleted).toBe(true);
-    expect(summary.mcpTempDeleted).toBe(true);
-  });
-
-  it('should return accurate summary with no projects', async () => {
-    mockProjectRepository = createMockProjectRepository([]);
-    service = new DefaultDataWipeService({
-      projectRepository: mockProjectRepository,
-      dataDirectory,
-    });
-
-    const summary = await service.wipeAll();
-
-    expect(summary.projectsWiped).toBe(0);
-    expect(summary.globalDataDeleted).toBe(true);
-    expect(summary.mcpTempDeleted).toBe(true);
+    expect(summary.archiveTempDeleted).toBe(false);
   });
 });

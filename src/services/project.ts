@@ -75,8 +75,6 @@ export class DefaultProjectService implements ProjectService {
       }
     }
 
-    await this.initializeClauditoFolder(projectPath);
-
     const data: CreateProjectData = { name: projectName, path: projectPath };
     const project = await this.projectRepository.create(data);
 
@@ -108,15 +106,6 @@ export class DefaultProjectService implements ProjectService {
 
   private async createProjectFolder(projectPath: string): Promise<void> {
     await this.fileSystem.mkdir(projectPath);
-  }
-
-  private async initializeClauditoFolder(projectPath: string): Promise<void> {
-    const clauditoPath = path.join(projectPath, '.claudito');
-    const clauditoExists = await this.fileSystem.exists(clauditoPath);
-
-    if (!clauditoExists) {
-      await this.fileSystem.mkdir(clauditoPath);
-    }
   }
 
   private getRoadmapPath(projectPath: string): string {

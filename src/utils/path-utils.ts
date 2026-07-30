@@ -42,30 +42,6 @@ export function extractFilenameWithoutExt(filePath: string): string {
 }
 
 /**
- * Build project data directory path
- */
-export function buildProjectDataPath(
-  projectPath: string,
-  ...subdirs: string[]
-): string {
-  return path.join(projectPath, '.claudito', ...subdirs);
-}
-
-/**
- * Build conversations directory path
- */
-export function buildConversationsPath(projectPath: string): string {
-  return buildProjectDataPath(projectPath, 'conversations');
-}
-
-/**
- * Build Ralph Loop tasks directory path
- */
-export function buildRalphLoopTasksPath(projectPath: string): string {
-  return buildProjectDataPath(projectPath, 'ralph-loop-tasks');
-}
-
-/**
  * Normalize path separators for cross-platform compatibility
  */
 export function normalizePath(inputPath: string): string {

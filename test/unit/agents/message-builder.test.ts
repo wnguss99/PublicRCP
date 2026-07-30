@@ -71,8 +71,10 @@ describe('MessageBuilder', () => {
 
       MessageBuilder.generateMcpConfig(servers, 'test-project');
 
+      // The temp dir is namespaced by PID so concurrent instances (one per port)
+      // never fight over the same MCP config files.
       expect(mockFs.mkdirSync).toHaveBeenCalledWith(
-        path.join('/tmp', 'claudito-mcp'),
+        path.join('/tmp', 'claudito-mcp', String(process.pid)),
         { recursive: true }
       );
     });
@@ -371,6 +373,51 @@ describe('MessageBuilder', () => {
 
       expect(env.FORCE_COLOR).toBe('1');
       expect(env.ANTHROPIC_TELEMETRY).toBe('false');
+    });
+
+    describe('ANTHROPIC_API_KEY handling', () => {
+      const original = process.env.ANTHROPIC_API_KEY;
+
+      afterEach(() => {
+        if (original === undefined) {
+          delete process.env.ANTHROPIC_API_KEY;
+        } else {
+          process.env.ANTHROPIC_API_KEY = original;
+        }
+      });
+
+      it('should drop the literal docs placeholder', () => {
+        // This exact value was found in the host's user environment and made every
+        // message fail with "Invalid API key" despite the CLI being logged in.
+        process.env.ANTHROPIC_API_KEY = 'sk-ant-...';
+
+        expect(MessageBuilder.buildEnvironment()).not.toHaveProperty('ANTHROPIC_API_KEY');
+      });
+
+      it('should drop a truncated key', () => {
+        process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-short';
+
+        expect(MessageBuilder.buildEnvironment()).not.toHaveProperty('ANTHROPIC_API_KEY');
+      });
+
+      it('should drop an empty key', () => {
+        process.env.ANTHROPIC_API_KEY = '   ';
+
+        expect(MessageBuilder.buildEnvironment()).not.toHaveProperty('ANTHROPIC_API_KEY');
+      });
+
+      it('should keep a plausible real key', () => {
+        const realistic = `sk-ant-api03-${'x'.repeat(95)}`;
+        process.env.ANTHROPIC_API_KEY = realistic;
+
+        expect(MessageBuilder.buildEnvironment().ANTHROPIC_API_KEY).toBe(realistic);
+      });
+
+      it('should leave the variable absent when it was never set', () => {
+        delete process.env.ANTHROPIC_API_KEY;
+
+        expect(MessageBuilder.buildEnvironment()).not.toHaveProperty('ANTHROPIC_API_KEY');
+      });
     });
 
     it('should merge custom env variables', () => {

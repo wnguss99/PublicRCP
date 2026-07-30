@@ -112,4 +112,6 @@ const defaultFileSystem: FileSystem = {
     fs.rmdirSync(p, options),
   renameSync: (old: string, newPath: string) =>
     fs.renameSync(old, newPath),
+  readdirSync: (p: string) =>
+    fs.readdirSync(p),
 };

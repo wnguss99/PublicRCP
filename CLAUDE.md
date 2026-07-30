@@ -28,19 +28,139 @@ doc/
 
 ## Data Storage Structure
 
-Global data in `$HOME/.claudito/`:
+All data lives under `CLAUDITO_HOME` (defaults to `$HOME/.claudito/`). Project data
+is centralized here — **not** in the project root — so several instances can share a
+project path without fighting over it:
 ```
 projects/
   index.json                      # [{ id, name, path }] - project registry
+  {projectId}/
+    status.json                   # ProjectStatus object
+    conversations/
+      {conversationId}.json       # Conversation with messages
+    ralph/                        # Ralph Loop task state
 settings.json                     # Global settings + agentPromptTemplate
+pids.json                         # Tracked child process ids
 ```
 
-Project-specific data in `{project-root}/.claudito/`:
+Legacy installs kept project data in `{project-root}/.claudito/`. It is migrated to
+the centralized layout on first read and the legacy folder is **left in place** on
+purpose — deleting it would strip that project's history from every other instance.
+
+## Multi-Instance Operation (3 users, 3 ports)
+
+Three PM2 apps — `claudito-4000` / `4001` / `4002` — one per user. Each gets its own
+`PORT`, `CLAUDITO_HOME` and credentials from `ecosystem.config.js` (gitignored;
+`ecosystem.config.example.js` is the template). Sessions are isolated because the
+cookie name carries the port (`claudito_session_4000`).
+
+**PM2 must always be driven elevated.** The `PM2 Resurrect (boot)` scheduled task
+runs at `RunLevel=Highest`, so the daemon owns `\\.\pipe\rpc.sock` as Administrator.
+A normal-privilege `pm2` dies with `connect EPERM \\.\pipe\rpc.sock` — that is what
+left all three instances down and unnoticed on 2026-07-30. Never type bare `pm2`:
+
 ```
-status.json                       # ProjectStatus object
-conversations/
-  {conversationId}.json           # Conversation with messages
+npm run pm2 -- list                  # elevated pm2 wrapper (scripts/pm2.ps1)
+npm run instances:start              # build + start all + save + health check
+npm run instances:restart            # validation gate, then restart all
+npm run instances:check              # health only, no recovery
+npm run guards:install               # register watchdog task + git hooks (once)
+npm run validate:instances           # ecosystem.config invariants
 ```
+
+`scripts/watchdog.ps1` (Task Scheduler, every 5 min) re-checks every port and revives
+dead instances into `logs/watchdog.log`.
+
+### Invariants enforced by `npm run validate:instances`
+
+Violating any of these has already broken production once, so the gate fails hard:
+
+- exactly one instance claims the legacy `~/.claudito` (otherwise the original user's
+  project list comes up empty)
+- `PORT` unique, `CLAUDITO_HOME` unique and absolute
+- `CLAUDITO_HOME` outside the repo (a gitignored dir under the worktree is one
+  `git clean -xdf` away from deleting user data)
+- app name is exactly `claudito-{PORT}`
+- no `CHANGE_ME`-style placeholder passwords
+- `ecosystem.config.js` / `.env` are not tracked by git
+
+### Hardening that must not be regressed
+
+- **`/api/fs` is confined to registered project paths** (`createFsPathPolicy`).
+  `browse`/`browse-with-files`/`drives` stay open so the folder picker works, but
+  `read`/`write`/`delete`/`mkdir`/`move` return `403 FS_PATH_NOT_ALLOWED` outside
+  those roots. Widen it with `CLAUDITO_FS_ROOTS` (path-delimiter separated), not
+  by removing the guard — the instances run as one elevated Windows account, so
+  an unrestricted path meant any user could read or delete anything on the host.
+- **`/api/mcp/*` is loopback-only** (`isLoopbackRequest`). It cannot require a
+  cookie because the Claude CLI calls it, so the host check is the only thing
+  standing between the LAN and "approve any permission prompt / send mail".
+- **`/api/health` only reveals operator detail to a logged-in caller.** The
+  public shape is status/version/timestamp/port plus `claudeCli.installed`.
+- **Sessions persist to `{CLAUDITO_HOME}/sessions.json`** and are keyed to a
+  fingerprint of the current credentials, so restarts do not log everyone out
+  but rotating a password still kills the sessions it issued.
+- **Orphan Claude processes are identified by OS creation time**, not by grepping
+  the command line for "claude" (`wmic` no longer exists on current Windows, and
+  the CLI hides behind `cmd.exe`). Both earlier approaches silently skipped every
+  orphan, leaking processes forever.
+- **Docker containers are matched by the `claudito-project` label.** Matching by
+  "first container returned by `docker ps`" attached agents to other projects' —
+  and other users' — containers.
+- **Tests must never write to the real data dir.** `test/env-setup.ts` redirects
+  `CLAUDITO_HOME` per Jest worker; a test run was caught overwriting a live
+  instance's `sessions.json`.
+- **`defaultSpawner` must pass `options.env` through untouched.** It used to send
+  `{...process.env, ...options.env}`, which resurrected every variable the caller
+  deleted — silently voiding both `delete CLAUDECODE` and the ANTHROPIC_API_KEY
+  guard. There is a regression test for this in `process-manager.test.ts`.
+- **Per-instance scratch dirs go through `src/utils/temp-dirs.ts`.** MCP configs
+  and zip archives live in `%TEMP%/claudito-{mcp,archives}/<pid>/` so the three
+  instances cannot collide. `pruneStaleInstanceTempDirs()` runs at startup and on
+  wipe to delete folders of dead PIDs (never a live sibling's) — without it every
+  restart leaked one folder forever, and the factory reset only cleared the
+  current PID's.
+- **The session cookie name is digits-only.** `PORT` is sanitised into
+  `claudito_session_<digits>`; a stray space in `PORT` would otherwise produce an
+  invalid cookie name and turn every request into a silent 401.
+
+### "Invalid API key · Fix external API key" — the four guards
+
+An `ANTHROPIC_API_KEY` the CLI cannot use (this host had the literal docs
+placeholder `sk-ant-...`) makes **every chat fail** while `claude` still reports
+itself logged in, because the CLI prefers that variable over the claude.ai
+subscription. Four independent layers now cover it:
+
+1. `describeUnusableApiKey()` + `dropUnusableApiKey()` strip it from the spawned
+   CLI environment and log a warning (`src/agents/message-builder.ts`).
+2. `defaultSpawner` no longer re-merges `process.env`, so step 1 actually sticks.
+3. `npm run validate:instances` fails on an unusable key in the environment, and
+   statically asserts that guards 1 and 2 are still present in the source.
+4. `/api/health` reports `authWarning: "UNUSABLE_ANTHROPIC_API_KEY"` and the
+   watchdog logs it as ERROR every 5 minutes — a green health check alone used to
+   hide this completely.
+
+Removing the variable for good needs the registry entry gone, not just
+`SetEnvironmentVariable(..., $null)` (that leaves an empty value behind):
+`Remove-ItemProperty HKCU:\Environment -Name ANTHROPIC_API_KEY`. Already-running
+PM2 processes keep the old value until the daemon restarts.
+
+### Caveats that are inherent, not bugs
+
+- All three instances run as the **same OS account**. Any user can browse the whole
+  filesystem and run Claude against any path. This is not a security boundary
+  between colleagues — only a convenience separation of workspaces.
+- `~/.claude.json` and `~/.claude/` (CLI credentials, MCP state) are shared by all
+  three, as is the single Claude subscription.
+- Two instances pointed at the same project path keep separate conversation
+  histories (verified), but will run Claude concurrently in the same working
+  tree. Avoid sharing a path.
+- Slack Socket Mode: if two instances are configured with the *same* Slack app
+  token, Slack delivers each event to only one of the connections, so commands
+  land on an arbitrary instance. Give each instance its own app, or enable Slack
+  on one only.
+- `maxConcurrentAgents` is per instance (default 5), so three instances can drive
+  15 concurrent Claude processes against one subscription.
 
 ## Key Interfaces
 
@@ -154,3 +274,19 @@ Sessions use UUID v4 IDs: `--session-id {uuid}` (new) or `--resume {uuid}` (exis
 ## Mermaid.js Support
 
 Mermaid diagrams in ` ```mermaid ` code blocks render automatically in messages and plan content (dark theme). Use `/mermaid` skill via the bundled plugin (`claudito-plugin` directory, load with `claude --plugin-dir ./claudito-plugin`). See `doc/MERMAID_EXAMPLES.md` for syntax reference.
+
+### State files are written atomically and recover themselves
+
+Every file that would take data with it if half-written now uses
+write-temp-then-rename, and every loader that could silently discard data now
+preserves it:
+
+| File | Failure it used to cause |
+|---|---|
+| `projects/index.json` | Non-atomic write + silent reset. `getProjectDataDir()` returns null for anything absent from the index, so an unreadable index made **every** project's conversations and ralph state unreachable — and the next save persisted the empty index. Now atomic, and a bad index is moved to `.corrupt` and **rebuilt from the `status.json` files on disk**. |
+| `settings.json` | Non-atomic write + silent fallback to defaults, losing Slack/e-mail credentials, docker config and agent profiles. Now atomic, and the unreadable file is kept as `.corrupt`. |
+| `sessions.json`, `pids.json` | Non-atomic; a truncated file logged everyone out / leaked orphan Claude processes. Both atomic now. |
+| stray `*.tmp` | Nothing ever removed temp files from interrupted writes — a 1.7 MB conversation temp from a month earlier was still present. `pruneAbandonedTempFiles()` clears files older than an hour at startup (never an in-flight write). |
+
+Keep new state files consistent with this: atomic write, and on a parse failure
+preserve the original rather than overwriting it.

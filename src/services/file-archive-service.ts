@@ -1,7 +1,22 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import { ZipArchive } from 'archiver';
+import type { ZipArchive as ZipArchiveCtor } from 'archiver';
+import { getInstanceTempDir } from '../utils/temp-dirs';
+
+/**
+ * archiver v8 is ESM-only ("type": "module") while this project builds to
+ * CommonJS. Node 22.12+/24 resolves `require()` of an ESM graph fine, so the
+ * runtime is happy — but a top-level `import` makes Jest's CJS transformer parse
+ * the package, and every suite that transitively reaches this module dies with
+ * "Cannot use import statement outside a module". Keeping the value import lazy
+ * (the type import above is erased at compile time) means only code that
+ * actually zips something pulls the package in.
+ */
+function loadZipArchive(): typeof ZipArchiveCtor {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const archiver = require('archiver') as { ZipArchive: typeof ZipArchiveCtor };
+  return archiver.ZipArchive;
+}
 
 export interface ArchiveResult {
   zipPath: string;
@@ -18,13 +33,9 @@ export async function createZipArchive(filePaths: string[], archiveName?: string
 
   const name = archiveName || `claudito-files-${Date.now()}`;
   const filename = name.endsWith('.zip') ? name : `${name}.zip`;
-  const zipPath = path.join(os.tmpdir(), 'claudito-archives', filename);
+  const zipPath = path.join(getInstanceTempDir('claudito-archives'), filename);
 
-  const dir = path.dirname(zipPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
+  const ZipArchive = loadZipArchive();
   const output = fs.createWriteStream(zipPath);
   const archive = new ZipArchive({ zlib: { level: 9 } });
 

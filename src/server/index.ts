@@ -7,7 +7,7 @@ import { AppConfig } from '../config';
 import { createApiRouter, getAgentManager, getRoadmapGenerator, getShellService, getRalphLoopService, getConversationRepository, getProjectRepository, setWebSocketServer, getRunProcessManager, getApprovalCoordinator } from '../routes';
 import { createAuthRouter } from '../routes/auth';
 import { DefaultWebSocketServer, ProjectWebSocketServer } from '../websocket';
-import { createErrorHandler, formatAccessibleUrls } from '../utils';
+import { createErrorHandler, formatAccessibleUrls, pruneStaleInstanceTempDirs, pruneAbandonedTempFiles, getDataDirectory } from '../utils';
 import { AuthService, createAuthService } from '../services/auth-service';
 import { createAuthMiddleware, parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import { displayLoginCredentials } from '../utils/qr-generator';
@@ -155,6 +155,13 @@ export class ExpressHttpServer implements HttpServer {
   async start(): Promise<void> {
     // Cleanup any orphan processes from previous runs
     await this.cleanupOrphanProcesses();
+
+    // Each run writes MCP configs / archives into a PID-named temp folder, so
+    // without this every restart would leave one behind permanently.
+    pruneStaleInstanceTempDirs();
+
+    // Interrupted atomic writes leave *.tmp behind; nothing used to remove them.
+    pruneAbandonedTempFiles(getDataDirectory());
 
     return new Promise((resolve, reject) => {
       const certPath = process.env['HTTPS_CERT'];

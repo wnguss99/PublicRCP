@@ -9,7 +9,6 @@ import os from 'os';
 import path from 'path';
 import { getLogger, Logger } from '../../utils';
 import { SettingsRepository } from '../../repositories/settings';
-import { generateContainerName } from './docker-service';
 import {
   ContainerManager,
   DockerService,
@@ -92,9 +91,8 @@ export class DefaultContainerManager implements ContainerManager {
       }
     }
 
-    // Check for pre-existing container by name convention
-    const containerName = generateContainerName(projectId);
-    const found = await this.findExistingContainer(containerName);
+    // Check for a pre-existing container belonging to THIS project
+    const found = await this.findExistingContainer(projectId);
 
     if (found) {
       try {
@@ -248,14 +246,28 @@ export class DefaultContainerManager implements ContainerManager {
     await this.dockerService.copyToContainer(containerId, claudeJsonPath, '/home/claudito/');
   }
 
-  private async findExistingContainer(_containerName: string): Promise<ContainerInfo | null> {
+  /**
+   * Find the container that belongs to `projectId`.
+   *
+   * `listContainers()` returns every claudito-labelled container on the host —
+   * all projects, and with several instances running, every user's. It used to
+   * return the FIRST inspectable container regardless of which project asked,
+   * so an agent could be attached to another project's (or another user's)
+   * container and run inside their mounted workspace.
+   *
+   * `docker ps` output does not carry the project, so each candidate is
+   * inspected and matched on the authoritative `claudito-project` label that
+   * createContainer stamps on.
+   */
+  private async findExistingContainer(projectId: string): Promise<ContainerInfo | null> {
     const containers = await this.dockerService.listContainers();
 
     for (const container of containers) {
-      // listContainers returns short IDs; check by name pattern
       const info = await this.dockerService.getContainerStatus(container.containerId);
 
-      if (info) return info;
+      if (info && info.projectId === projectId) {
+        return info;
+      }
     }
 
     return null;

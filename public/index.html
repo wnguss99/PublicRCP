@@ -455,6 +455,15 @@
                 <span id="conversation-stats" class="text-xs text-gray-500 flex items-center gap-3"></span>
               </div>
               <div class="flex items-center gap-2">
+                <!-- Model Selector -->
+                <div id="model-selector" class="flex items-center bg-gray-700 rounded text-xs h-6" title="Select Claude model for this project">
+                  <select id="project-model-select" class="bg-gray-700 text-white text-xs px-1.5 h-full rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-purple-500 appearance-none pr-5" style="background-image: url('data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%239ca3af%22 stroke-width=%222%22%3E%3Cpath stroke-linecap=%22round%22 stroke-linejoin=%22round%22 d=%22M19 9l-7 7-7-7%22/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 0.25rem center; background-size: 0.75rem;">
+                    <option value="claude-opus-4-6" class="bg-gray-700 text-white">Opus 4.6</option>
+                    <option value="claude-sonnet-4-6" class="bg-gray-700 text-white">Sonnet 4.6</option>
+                    <option value="claude-sonnet-4-5-20250929" class="bg-gray-700 text-white">Sonnet 4.5</option>
+                    <option value="claude-haiku-4-5-20251001" class="bg-gray-700 text-white">Haiku 4.5</option>
+                  </select>
+                </div>
                 <!-- Permission Mode Selector -->
                 <div id="permission-mode-selector" class="flex items-center bg-gray-700 rounded overflow-hidden text-xs h-6">
                   <button id="btn-perm-accept" class="h-full px-2 transition-colors perm-btn flex items-center justify-center gap-1" title="Accept Edits - Auto-approve file edits">
@@ -490,15 +499,6 @@
                     </svg>
                     <span class="hidden md:inline">Ask</span>
                   </button>
-                </div>
-                <!-- Model Selector -->
-                <div id="model-selector" class="flex items-center bg-gray-700 rounded text-xs h-6" title="Select Claude model for this project">
-                  <select id="project-model-select" class="bg-gray-700 text-white text-xs px-1.5 h-full rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-purple-500 appearance-none pr-5" style="background-image: url('data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%239ca3af%22 stroke-width=%222%22%3E%3Cpath stroke-linecap=%22round%22 stroke-linejoin=%22round%22 d=%22M19 9l-7 7-7-7%22/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 0.25rem center; background-size: 0.75rem;">
-                    <option value="claude-opus-4-6" class="bg-gray-700 text-white">Opus 4.6</option>
-                    <option value="claude-sonnet-4-6" class="bg-gray-700 text-white">Sonnet 4.6</option>
-                    <option value="claude-sonnet-4-5-20250929" class="bg-gray-700 text-white">Sonnet 4.5</option>
-                    <option value="claude-haiku-4-5-20251001" class="bg-gray-700 text-white">Haiku 4.5</option>
-                  </select>
                 </div>
                 <!-- Profile Selector -->
                 <div id="profile-selector" class="flex items-center bg-gray-700 rounded text-xs h-6" title="Select agent profile for this project">

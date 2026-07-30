@@ -1,13 +1,12 @@
 import fs from 'fs';
-import path from 'path';
-import os from 'os';
 import { ProjectRepository } from '../repositories';
-import { getLogger } from '../utils';
+import { getLogger, getInstanceTempDirPath, pruneStaleInstanceTempDirs } from '../utils';
 
 export interface WipeSummary {
   projectsWiped: number;
   globalDataDeleted: boolean;
   mcpTempDeleted: boolean;
+  archiveTempDeleted: boolean;
 }
 
 export interface DataWipeService {
@@ -30,41 +29,47 @@ export class DefaultDataWipeService implements DataWipeService {
   }
 
   async wipeAll(): Promise<WipeSummary> {
-    const projectPaths = await this.collectProjectPaths();
-    const projectsWiped = this.wipeProjectData(projectPaths);
+    // Project data lives inside the data directory now ({CLAUDITO_HOME}/projects/{id}),
+    // so wiping the data directory takes the projects with it. Count them before
+    // the delete so the summary reports what actually went away instead of 0.
+    const projectsWiped = await this.countProjects();
     const mcpTempDeleted = this.wipeMcpTempData();
+    const archiveTempDeleted = this.wipeArchiveTempData();
     const globalDataDeleted = this.wipeGlobalData();
 
-    return { projectsWiped, globalDataDeleted, mcpTempDeleted };
+    return { projectsWiped, globalDataDeleted, mcpTempDeleted, archiveTempDeleted };
   }
 
-  private async collectProjectPaths(): Promise<string[]> {
+  private async countProjects(): Promise<number> {
     try {
       const projects = await this.projectRepository.findAll();
-      return projects.map((p) => p.path);
+      return projects.length;
     } catch {
-      this.logger.warn('Failed to read project index, skipping per-project wipe');
-      return [];
+      this.logger.warn('Failed to read project index, reporting 0 projects wiped');
+      return 0;
     }
   }
 
-  private wipeProjectData(projectPaths: string[]): number {
-    let wiped = 0;
-
-    for (const projectPath of projectPaths) {
-      const clauditoDir = path.join(projectPath, '.claudito');
-
-      if (this.deleteDirectoryRecursive(clauditoDir)) {
-        wiped++;
-      }
-    }
-
-    return wiped;
-  }
-
+  /**
+   * Scratch data is per instance now, so a wipe removes this instance's folder and
+   * anything left by processes that are gone — but never a *live* sibling
+   * instance's folder. Pruning matters because scoping the wipe to the current PID
+   * alone left every previous run's directory behind for good.
+   */
   private wipeMcpTempData(): boolean {
-    const mcpTempDir = path.join(os.tmpdir(), 'claudito-mcp');
-    return this.deleteDirectoryRecursive(mcpTempDir);
+    const deleted = this.deleteDirectoryRecursive(getInstanceTempDirPath('claudito-mcp'));
+
+    try {
+      pruneStaleInstanceTempDirs();
+    } catch (error) {
+      this.logger.warn('Failed to prune stale instance temp dirs', { error: String(error) });
+    }
+
+    return deleted;
+  }
+
+  private wipeArchiveTempData(): boolean {
+    return this.deleteDirectoryRecursive(getInstanceTempDirPath('claudito-archives'));
   }
 
   private wipeGlobalData(): boolean {

@@ -113,6 +113,49 @@ describe('FileSettingsRepository', () => {
       // Should not throw and should use defaults
       expect(async () => await repository.get()).not.toThrow();
     });
+
+    it('should move an unreadable settings file aside instead of overwriting it', () => {
+      // settings.json holds the only copy of the Slack/e-mail credentials. Falling
+      // back to defaults is fine, but the next save must not erase the original.
+      mockFileSystem.renameSync = jest.fn();
+      mockFileSystem.existsSync.mockReturnValueOnce(true);
+      mockFileSystem.existsSync.mockReturnValueOnce(true);
+      mockFileSystem.readFileSync.mockReturnValue('invalid json');
+
+      repository = new FileSettingsRepository(testDataDir, mockFileSystem);
+
+      expect(mockFileSystem.renameSync).toHaveBeenCalledWith(
+        expect.stringContaining('settings.json'),
+        expect.stringContaining('settings.json.corrupt'),
+      );
+    });
+  });
+
+  describe('atomic save', () => {
+    it('should write to a temp file and rename it into place', async () => {
+      mockFileSystem.renameSync = jest.fn();
+      mockFileSystem.existsSync.mockReturnValue(false);
+
+      repository = new FileSettingsRepository(testDataDir, mockFileSystem);
+      await repository.update({ historyLimit: 42 });
+
+      const written = mockFileSystem.writeFileSync.mock.calls.at(-1)?.[0] ?? '';
+      expect(written).toContain('settings.json.tmp');
+      expect(mockFileSystem.renameSync).toHaveBeenCalledWith(
+        expect.stringContaining('settings.json.tmp'),
+        expect.stringContaining('settings.json'),
+      );
+    });
+
+    it('should still save when the adapter has no renameSync', async () => {
+      mockFileSystem.existsSync.mockReturnValue(false);
+
+      repository = new FileSettingsRepository(testDataDir, mockFileSystem);
+      await repository.update({ historyLimit: 7 });
+
+      const written = mockFileSystem.writeFileSync.mock.calls.at(-1)?.[0] ?? '';
+      expect(written).not.toContain('.tmp');
+    });
   });
 
   describe('update', () => {

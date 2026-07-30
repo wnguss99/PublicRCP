@@ -6,9 +6,6 @@ import {
   generateCacheKey,
   extractFilename,
   extractFilenameWithoutExt,
-  buildProjectDataPath,
-  buildConversationsPath,
-  buildRalphLoopTasksPath,
   normalizePath,
   joinPath,
 } from '../../../src/utils/path-utils';
@@ -89,31 +86,8 @@ describe('path-utils', () => {
     });
   });
 
-  describe('buildProjectDataPath', () => {
-    it('should build .claudito path under project', () => {
-      const result = buildProjectDataPath('/project', 'sub');
-      expect(result).toBe(path.join('/project', '.claudito', 'sub'));
-    });
 
-    it('should handle multiple subdirs', () => {
-      const result = buildProjectDataPath('/project', 'a', 'b');
-      expect(result).toBe(path.join('/project', '.claudito', 'a', 'b'));
-    });
-  });
 
-  describe('buildConversationsPath', () => {
-    it('should build conversations directory path', () => {
-      const result = buildConversationsPath('/project');
-      expect(result).toBe(path.join('/project', '.claudito', 'conversations'));
-    });
-  });
-
-  describe('buildRalphLoopTasksPath', () => {
-    it('should build ralph-loop-tasks directory path', () => {
-      const result = buildRalphLoopTasksPath('/project');
-      expect(result).toBe(path.join('/project', '.claudito', 'ralph-loop-tasks'));
-    });
-  });
 
   describe('normalizePath', () => {
     it('should convert backslashes to forward slashes', () => {

@@ -63,6 +63,25 @@ function createMockFileSystem(): FileSystem & {
         files.set(normalizedNew, content);
       }
     }),
+    readdirSync: jest.fn((dirPath: string) => {
+      const prefix = normalizePath(dirPath).replace(/\/$/, '') + '/';
+      const names = new Set<string>();
+
+      for (const key of [...files.keys(), ...dirs]) {
+        if (!key.startsWith(prefix)) {
+          continue;
+        }
+
+        const rest = key.slice(prefix.length);
+        const first = rest.split('/')[0];
+
+        if (first) {
+          names.add(first);
+        }
+      }
+
+      return [...names];
+    }),
   };
 }
 
@@ -76,6 +95,19 @@ describe('generateIdFromPath', () => {
   it('should preserve alphanumeric characters', () => {
     expect(generateIdFromPath('project123')).toBe('project123');
     expect(generateIdFromPath('MyProject')).toBe('MyProject');
+  });
+
+  it('should truncate and hash long paths', () => {
+    const longPath = '/home/user/' + 'a'.repeat(100) + '/project';
+    const id = generateIdFromPath(longPath);
+    expect(id.length).toBeLessThanOrEqual(80);
+    expect(id).toMatch(/^_home_user_a+_[0-9a-f]{16}$/);
+  });
+
+  it('should produce different IDs for different long paths', () => {
+    const path1 = '/home/user/' + 'a'.repeat(100) + '/project1';
+    const path2 = '/home/user/' + 'a'.repeat(100) + '/project2';
+    expect(generateIdFromPath(path1)).not.toBe(generateIdFromPath(path2));
   });
 });
 
@@ -153,8 +185,7 @@ describe('FileProjectRepository', () => {
       expect(index).toHaveLength(1);
       expect(index[0]).toEqual({ id: '_path_to_project', name: 'Test Project', path: '/path/to/project' });
 
-      // Data is now stored in {project-root}/.claudito/
-      const statusPath = '/path/to/project/.claudito/status.json';
+      const statusPath = normalizePath(path.join(projectsDir, '_path_to_project', 'status.json'));
       const statusContent = mockFs.files.get(statusPath);
       expect(statusContent).toBeDefined();
       const status = JSON.parse(statusContent!) as ProjectStatus;
@@ -175,14 +206,13 @@ describe('FileProjectRepository', () => {
       ).rejects.toThrow('Project with this path already exists');
     });
 
-    it('should create .claudito directory in project path', async () => {
+    it('should create centralized data directory', async () => {
       await repository.create({
         name: 'Test',
         path: '/test/path',
       });
 
-      // Data is now stored in {project-root}/.claudito/
-      const projectDataDir = '/test/path/.claudito';
+      const projectDataDir = normalizePath(path.join(projectsDir, '_test_path'));
       expect(mockFs.dirs.has(projectDataDir)).toBe(true);
     });
   });
@@ -441,12 +471,10 @@ describe('FileProjectRepository', () => {
       expect(projects[0]!.name).toBe('Test 1');
     });
 
-    it('should remove .claudito directory in project path', async () => {
+    it('should remove centralized data directory', async () => {
       const created = await repository.create({ name: 'Test', path: '/test' });
-      // Data is stored in {project-root}/.claudito/
-      const projectDataDir = '/test/.claudito';
+      const projectDataDir = normalizePath(path.join(projectsDir, created.id));
 
-      // Verify the directory was created
       expect(mockFs.dirs.has(projectDataDir)).toBe(true);
 
       await repository.delete(created.id);
@@ -997,8 +1025,7 @@ describe('FileProjectRepository', () => {
   describe('loadStatus edge cases', () => {
     it('should return null when status file is corrupted', async () => {
       const created = await repository.create({ name: 'Test', path: '/test' });
-      // Corrupt the status file
-      const statusPath = '/test/.claudito/status.json';
+      const statusPath = normalizePath(path.join(projectsDir, created.id, 'status.json'));
       mockFs.files.set(statusPath, 'not valid json');
 
       // Clear cache to force reload
@@ -1082,6 +1109,101 @@ describe('FileProjectRepository', () => {
       const found = await newRepo.findById(projectId);
 
       expect(found).toBeNull();
+    });
+  });
+  // 2026-07-30. Project data moved to {projectsDir}/{id}, and getProjectDataDir()
+  // returns null for anything absent from the index — so an unreadable index made
+  // every project's conversations and ralph state unreachable although the files
+  // were intact, and the next save persisted the empty index. The index is fully
+  // derivable from the status.json files, so it is rebuilt instead.
+  describe('index recovery', () => {
+    function seedProjectOnDisk(id: string, name: string, projectPath: string): void {
+      const statusPath = normalizePath(path.join(projectsDir, id, 'status.json'));
+      mockFs.dirs.add(normalizePath(path.join(projectsDir, id)));
+      mockFs.files.set(statusPath, JSON.stringify({
+        id,
+        name,
+        path: projectPath,
+        status: 'stopped',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        nextItem: null,
+        currentItem: null,
+        currentConversationId: null,
+        lastContextUsage: null,
+        permissionOverrides: null,
+        modelOverride: null,
+        mcpOverrides: null,
+      }));
+    }
+
+    it('should rebuild the index when it is corrupt', async () => {
+      mockFs.dirs.add(normalizePath(projectsDir));
+      mockFs.files.set(indexPath, '{ this is not json');
+      seedProjectOnDisk('proj_a', 'A', '/p/a');
+      seedProjectOnDisk('proj_b', 'B', '/p/b');
+
+      const repo = new FileProjectRepository(dataDir, mockFs);
+      const all = await repo.findAll();
+
+      expect(all.map((p) => p.id).sort()).toEqual(['proj_a', 'proj_b']);
+    });
+
+    it('should keep the corrupt index for forensics', () => {
+      mockFs.dirs.add(normalizePath(projectsDir));
+      mockFs.files.set(indexPath, 'not json');
+      seedProjectOnDisk('proj_a', 'A', '/p/a');
+
+      new FileProjectRepository(dataDir, mockFs);
+
+      expect(mockFs.files.has(normalizePath(`${indexPath}.corrupt`))).toBe(true);
+    });
+
+    it('should make data reachable again after recovery', () => {
+      mockFs.dirs.add(normalizePath(projectsDir));
+      mockFs.files.set(indexPath, 'not json');
+      seedProjectOnDisk('proj_a', 'A', '/p/a');
+
+      const repo = new FileProjectRepository(dataDir, mockFs);
+
+      // This is the actual failure mode: null here means conversations and ralph
+      // state cannot be located at all.
+      expect(repo.getProjectDataDir('proj_a')).toBe(path.join(projectsDir, 'proj_a'));
+    });
+
+    it('should rebuild when the index file is missing entirely', async () => {
+      mockFs.dirs.add(normalizePath(projectsDir));
+      seedProjectOnDisk('proj_a', 'A', '/p/a');
+
+      const repo = new FileProjectRepository(dataDir, mockFs);
+
+      expect((await repo.findAll()).map((p) => p.id)).toEqual(['proj_a']);
+    });
+
+    it('should skip project folders without a usable status file', async () => {
+      mockFs.dirs.add(normalizePath(projectsDir));
+      mockFs.files.set(indexPath, 'not json');
+      seedProjectOnDisk('proj_a', 'A', '/p/a');
+      mockFs.dirs.add(normalizePath(path.join(projectsDir, 'proj_broken')));
+      mockFs.files.set(normalizePath(path.join(projectsDir, 'proj_broken', 'status.json')), '{ bad');
+
+      const repo = new FileProjectRepository(dataDir, mockFs);
+
+      expect((await repo.findAll()).map((p) => p.id)).toEqual(['proj_a']);
+    });
+
+    it('should write the index atomically', async () => {
+      const repo = new FileProjectRepository(dataDir, mockFs);
+      await repo.create({ name: 'Atomic', path: '/p/atomic' });
+
+      // Temp file must be renamed into place, never left behind.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const renames = (mockFs.renameSync as jest.Mock).mock.calls.map(
+        ([from, to]) => [normalizePath(String(from)), normalizePath(String(to))],
+      );
+
+      expect(renames).toContainEqual([`${indexPath}.tmp`, indexPath]);
+      expect(mockFs.files.has(normalizePath(`${indexPath}.tmp`))).toBe(false);
     });
   });
 });

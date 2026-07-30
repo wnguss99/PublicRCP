@@ -29,12 +29,15 @@ interface PidFileSystem {
   readFileSync(filePath: string): string;
   writeFileSync(filePath: string, data: string): void;
   existsSync(filePath: string): boolean;
+  /** Optional so existing test doubles keep working; enables atomic saves. */
+  renameSync?(oldPath: string, newPath: string): void;
 }
 
 const defaultFs: PidFileSystem = {
   readFileSync: (filePath) => fs.readFileSync(filePath, 'utf-8'),
   writeFileSync: (filePath, data) => fs.writeFileSync(filePath, data, 'utf-8'),
   existsSync: (filePath) => fs.existsSync(filePath),
+  renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
 };
 
 function isProcessRunning(pid: number): boolean {
@@ -46,40 +49,129 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
-function getProcessCommandLine(pid: number): string | null {
+interface ProcessDetail {
+  commandLine: string | null;
+  /** Process creation time in epoch ms, when the platform reports it. */
+  createdAtMs: number | null;
+}
+
+/**
+ * A PID may have been recycled onto an unrelated process since we recorded it.
+ * We record `startedAt` at spawn time, so the OS-reported creation time of our
+ * own process is within seconds; anything further apart is a different process.
+ */
+const PID_REUSE_TOLERANCE_MS = 60 * 1000;
+
+function getProcessDetail(pid: number): ProcessDetail {
   try {
     if (process.platform === 'win32') {
-      // Windows: use wmic to get command line
+      // NOT wmic: it is removed from Windows 11 24H2+ (this host has no wmic at
+      // all), which made every lookup fail, every orphan look like a reused PID,
+      // and orphaned Claude processes accumulate forever. CIM is always present.
+      const script =
+        `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; ` +
+        'if ($null -eq $p) { exit 1 }; ' +
+        "Write-Output ('CREATED=' + $p.CreationDate.ToUniversalTime().ToString('o')); " +
+        "Write-Output ('CMD=' + $p.CommandLine)";
+
       const output = execSync(
-        `wmic process where processid=${pid} get commandline /format:list`,
-        { encoding: 'utf-8', timeout: 5000, windowsHide: true }
+        `powershell.exe -NoProfile -NonInteractive -Command "${script.replace(/"/g, '\\"')}"`,
+        { encoding: 'utf-8', timeout: 10000, windowsHide: true }
       );
-      const match = output.match(/CommandLine=(.+)/);
-      return match && match[1] ? match[1].trim() : null;
-    } else {
-      // Unix: use ps to get command line
-      const output = execSync(`ps -p ${pid} -o args=`, {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      return output.trim() || null;
+
+      return parseProcessDetail(output);
     }
+
+    // Unix: elapsed seconds is portable enough on Linux and avoids date parsing.
+    const output = execSync(`ps -p ${pid} -o etimes=,args=`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    const trimmed = output.trim();
+
+    if (!trimmed) {
+      return { commandLine: null, createdAtMs: null };
+    }
+
+    const match = trimmed.match(/^(\d+)\s+([\s\S]*)$/);
+
+    if (!match) {
+      return { commandLine: trimmed, createdAtMs: null };
+    }
+
+    const elapsedSeconds = Number(match[1]);
+    const createdAtMs = Number.isFinite(elapsedSeconds) ? Date.now() - elapsedSeconds * 1000 : null;
+
+    return { commandLine: (match[2] || '').trim() || null, createdAtMs };
   } catch {
-    return null;
+    return { commandLine: null, createdAtMs: null };
   }
 }
 
-function isClaudeProcess(pid: number): boolean {
-  const cmdLine = getProcessCommandLine(pid);
+function parseProcessDetail(output: string): ProcessDetail {
+  const createdMatch = output.match(/CREATED=(.+)/);
+  const cmdMatch = output.match(/CMD=([\s\S]*)/);
 
-  if (!cmdLine) {
-    return false;
+  let createdAtMs: number | null = null;
+
+  if (createdMatch && createdMatch[1]) {
+    const parsed = Date.parse(createdMatch[1].trim());
+    createdAtMs = Number.isNaN(parsed) ? null : parsed;
   }
 
-  // Check if the command line contains "claude" (case-insensitive)
-  // This matches: claude, claude.cmd, @anthropic/claude-code, etc.
-  const lowerCmd = cmdLine.toLowerCase();
+  const commandLine = cmdMatch && cmdMatch[1] ? cmdMatch[1].trim() : '';
+
+  return { commandLine: commandLine || null, createdAtMs };
+}
+
+function looksLikeClaude(commandLine: string): boolean {
+  // Matches: claude, claude.cmd, @anthropic/claude-code, and the cmd.exe wrapper
+  // Windows spawns around it.
+  const lowerCmd = commandLine.toLowerCase();
   return lowerCmd.includes('claude') || lowerCmd.includes('anthropic');
+}
+
+export interface OwnershipVerdict {
+  isOwn: boolean;
+  /** Why we decided that, for logging — skips used to be silent and unexplainable. */
+  reason: string;
+}
+
+/**
+ * Decide whether the live process at `pid` is still the one we spawned.
+ *
+ * Creation time is the decisive signal: we wrote `startedAt` at spawn time, so
+ * our own process matches within seconds, and a recycled PID does not. It is
+ * checked first and on its own — the command line is only a fallback for when
+ * the platform gives us no creation time.
+ *
+ * Requiring the command line to *also* say "claude" was wrong: Windows spawns
+ * the CLI behind a `cmd.exe` wrapper whose command line may not contain the
+ * word, and a more privileged process hides it entirely. Every such process was
+ * classified as a recycled PID and skipped forever, which is the leak this
+ * function exists to prevent.
+ */
+function verifyOwnClaudeProcess(pid: number, trackedStartedAt: string): OwnershipVerdict {
+  const detail = getProcessDetail(pid);
+  const trackedMs = Date.parse(trackedStartedAt);
+
+  if (detail.createdAtMs !== null && !Number.isNaN(trackedMs)) {
+    const driftMs = Math.abs(detail.createdAtMs - trackedMs);
+
+    if (driftMs > PID_REUSE_TOLERANCE_MS) {
+      return { isOwn: false, reason: `creation time drift ${Math.round(driftMs / 1000)}s — PID reused` };
+    }
+
+    return { isOwn: true, reason: `creation time matches (${Math.round(driftMs / 1000)}s drift)` };
+  }
+
+  if (detail.commandLine !== null) {
+    return looksLikeClaude(detail.commandLine)
+      ? { isOwn: true, reason: 'command line looks like Claude (no creation time available)' }
+      : { isOwn: false, reason: 'command line is not Claude (no creation time available)' };
+  }
+
+  return { isOwn: false, reason: 'could not read creation time or command line' };
 }
 
 function killProcess(pid: number): boolean {
@@ -118,10 +210,18 @@ export class FilePidTracker implements PidTracker {
 
   private saveToFile(): void {
     try {
-      this.fileSystem.writeFileSync(
-        this.filePath,
-        JSON.stringify(this.processes, null, 2)
-      );
+      const data = JSON.stringify(this.processes, null, 2);
+
+      // Atomic when available: a truncated pids.json is unparseable, the tracker
+      // starts empty, and orphan Claude processes then leak unnoticed.
+      if (this.fileSystem.renameSync) {
+        const tempPath = `${this.filePath}.tmp`;
+        this.fileSystem.writeFileSync(tempPath, data);
+        this.fileSystem.renameSync(tempPath, this.filePath);
+        return;
+      }
+
+      this.fileSystem.writeFileSync(this.filePath, data);
     } catch (error) {
       this.logger.error('Failed to save PID file', { error });
     }
@@ -170,11 +270,14 @@ export class FilePidTracker implements PidTracker {
       if (isProcessRunning(proc.pid)) {
         result.foundCount++;
 
-        // Verify this PID is actually a Claude process (PIDs can be reused)
-        if (!isClaudeProcess(proc.pid)) {
-          this.logger.info('PID reused by different process, skipping', {
+        // Verify this PID is still the Claude process we spawned (PIDs get reused)
+        const verdict = verifyOwnClaudeProcess(proc.pid, proc.startedAt);
+
+        if (verdict.isOwn === false) {
+          this.logger.info('Skipping tracked PID — not our process', {
             pid: proc.pid,
             projectId: proc.projectId,
+            reason: verdict.reason,
           });
           result.skippedPids.push(proc.pid);
           continue;
@@ -183,6 +286,7 @@ export class FilePidTracker implements PidTracker {
         this.logger.info('Found orphan Claude process, attempting to kill', {
           pid: proc.pid,
           projectId: proc.projectId,
+          reason: verdict.reason,
         });
 
         if (killProcess(proc.pid)) {

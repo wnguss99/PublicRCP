@@ -9,6 +9,7 @@ import { RalphLoopService } from '../../../src/services/ralph-loop/types';
 import { RunProcessManager } from '../../../src/services/run-config/run-process-types';
 import { ConversationRepository } from '../../../src/repositories/conversation';
 import { ProjectRepository } from '../../../src/repositories/project';
+import { COOKIE_NAME } from '../../../src/middleware/auth-middleware';
 import { Server } from 'http';
 import { EventEmitter } from 'events';
 import { getLogStore } from '../../../src/utils/logger';
@@ -1416,7 +1417,7 @@ describe('DefaultWebSocketServer', () => {
 
       const callback = jest.fn();
       verifyClientFn(
-        { req: { headers: { cookie: 'claudito_session=bad-session-id' } } },
+        { req: { headers: { cookie: `${COOKIE_NAME}=bad-session-id` } } },
         callback
       );
 
@@ -1436,7 +1437,7 @@ describe('DefaultWebSocketServer', () => {
 
       const callback = jest.fn();
       verifyClientFn(
-        { req: { headers: { cookie: 'claudito_session=valid-session-id' } } },
+        { req: { headers: { cookie: `${COOKIE_NAME}=valid-session-id` } } },
         callback
       );
 

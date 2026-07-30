@@ -16,8 +16,48 @@ import fs from 'fs';
 import os from 'os';
 
 describe('paths utilities', () => {
+  const originalHome = process.env.CLAUDITO_HOME;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    // The test harness sets CLAUDITO_HOME globally (so no test writes into a live
+    // instance's data dir). These cases cover the homedir fallback, so clear it.
+    delete process.env.CLAUDITO_HOME;
+  });
+
+  afterAll(() => {
+    if (originalHome === undefined) {
+      delete process.env.CLAUDITO_HOME;
+    } else {
+      process.env.CLAUDITO_HOME = originalHome;
+    }
+  });
+
+  describe('CLAUDITO_HOME override', () => {
+    it('should use CLAUDITO_HOME instead of the home directory', () => {
+      // This is what separates the per-port instances from each other.
+      process.env.CLAUDITO_HOME = path.join('/instances', 'user2');
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+
+      expect(getDataDirectory()).toBe(path.join('/instances', 'user2'));
+      expect(os.homedir).not.toHaveBeenCalled();
+    });
+
+    it('should create the CLAUDITO_HOME directory when missing', () => {
+      process.env.CLAUDITO_HOME = path.join('/instances', 'user3');
+      (fs.existsSync as jest.Mock).mockReturnValue(false);
+
+      getDataDirectory();
+
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.join('/instances', 'user3'), { recursive: true });
+    });
+
+    it('should fall back to the home directory when CLAUDITO_HOME is empty', () => {
+      process.env.CLAUDITO_HOME = '';
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+
+      expect(getDataDirectory()).toBe(path.join('/mock/home', '.claudito'));
+    });
   });
 
   describe('getDataDirectory', () => {

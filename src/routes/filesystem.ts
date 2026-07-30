@@ -314,8 +314,91 @@ function handleCreateDirectory(
     });
 }
 
-export function createFilesystemRouter(service: FilesystemService): Router {
+/**
+ * Restricts which paths file operations may touch.
+ *
+ * `/api/fs` used to accept any absolute path for read/write/delete/move. With a
+ * single trusted operator that was merely blunt; with one instance per colleague
+ * — all running as the same (elevated) Windows account — it means any logged-in
+ * user can read or destroy anything on the machine, including other people's
+ * project data. Browsing stays open because picking a project folder needs it;
+ * everything that reads content or mutates the disk is confined to registered
+ * project paths, plus whatever `CLAUDITO_FS_ROOTS` adds as an escape hatch.
+ */
+export interface FsPathPolicy {
+  allowedRoots(): Promise<string[]>;
+}
+
+function isPathInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+
+  if (rel === '') {
+    return true;
+  }
+
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function normalizeForCompare(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function isPathAllowed(policy: FsPathPolicy, target: string): Promise<boolean> {
+  const roots = await policy.allowedRoots();
+
+  if (roots.length === 0) {
+    return false;
+  }
+
+  const normalizedTarget = normalizeForCompare(target);
+
+  for (const root of roots) {
+    if (isPathInside(normalizeForCompare(root), normalizedTarget)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function createFsPathPolicy(listProjectPaths: () => Promise<string[]>): FsPathPolicy {
+  const extraRoots = (process.env.CLAUDITO_FS_ROOTS || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return {
+    async allowedRoots(): Promise<string[]> {
+      try {
+        const projectPaths = await listProjectPaths();
+        return [...projectPaths, ...extraRoots];
+      } catch {
+        return extraRoots;
+      }
+    },
+  };
+}
+
+export function createFilesystemRouter(service: FilesystemService, policy?: FsPathPolicy): Router {
   const router = Router();
+
+  /** Resolves true when the request may proceed; otherwise the response is already sent. */
+  const guard = async (targetPath: string, res: Response): Promise<boolean> => {
+    if (!policy) {
+      return true;
+    }
+
+    if (await isPathAllowed(policy, targetPath)) {
+      return true;
+    }
+
+    res.status(403).json({
+      error: 'Path is outside the allowed project directories',
+      code: 'FS_PATH_NOT_ALLOWED',
+    });
+    return false;
+  };
 
   router.get('/drives', (_req: Request, res: Response) => {
     handleDrives(service, res);
@@ -340,7 +423,11 @@ export function createFilesystemRouter(service: FilesystemService): Router {
       return;
     }
 
-    handleReadFile(service, filePath, res);
+    void guard(filePath, res).then((ok) => {
+      if (ok) {
+        handleReadFile(service, filePath, res);
+      }
+    });
   });
 
   router.get('/browse-with-files', (req: Request, res: Response) => {
@@ -369,7 +456,11 @@ export function createFilesystemRouter(service: FilesystemService): Router {
       return;
     }
 
-    handleWriteFile(service, filePath, content, res);
+    void guard(filePath, res).then((ok) => {
+      if (ok) {
+        handleWriteFile(service, filePath, content, res);
+      }
+    });
   });
 
   router.delete('/delete', (req: Request, res: Response) => {
@@ -382,7 +473,11 @@ export function createFilesystemRouter(service: FilesystemService): Router {
       return;
     }
 
-    handleDelete(service, targetPath, isDirectory === true, res);
+    void guard(targetPath, res).then((ok) => {
+      if (ok) {
+        handleDelete(service, targetPath, isDirectory === true, res);
+      }
+    });
   });
 
   router.post('/mkdir', (req: Request, res: Response) => {
@@ -394,7 +489,11 @@ export function createFilesystemRouter(service: FilesystemService): Router {
       return;
     }
 
-    handleCreateDirectory(service, dirPath, res);
+    void guard(dirPath, res).then((ok) => {
+      if (ok) {
+        handleCreateDirectory(service, dirPath, res);
+      }
+    });
   });
 
   router.put('/move', (req: Request, res: Response): void => {
@@ -403,6 +502,16 @@ export function createFilesystemRouter(service: FilesystemService): Router {
 
     if (!sourcePath || !targetPath) {
       res.status(400).json({ error: 'sourcePath and targetPath are required' });
+      return;
+    }
+
+    // Both ends matter: moving an allowed file to an arbitrary destination, or an
+    // arbitrary file into a project, would both sidestep the restriction.
+    if (await guard(sourcePath, res) === false) {
+      return;
+    }
+
+    if (await guard(targetPath, res) === false) {
       return;
     }
 

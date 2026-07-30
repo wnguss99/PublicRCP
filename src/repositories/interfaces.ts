@@ -142,6 +142,7 @@ export interface IAsyncFileSystem {
  */
 export interface ProjectPathResolver {
   getProjectPath(projectId: string): string | null;
+  getProjectDataDir(projectId: string): string | null;
 }
 
 /**

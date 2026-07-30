@@ -65,8 +65,16 @@ describe('auth-middleware', () => {
   });
 
   describe('COOKIE_NAME', () => {
-    it('should be claudito_session', () => {
-      expect(COOKIE_NAME).toBe('claudito_session');
+    it('should include port in cookie name', () => {
+      const expectedSuffix = (process.env.PORT || '').trim().replace(/[^0-9]/g, '') || '3000';
+      expect(COOKIE_NAME).toBe(`claudito_session_${expectedSuffix}`);
+    });
+
+    it('should be a valid cookie name', () => {
+      // A cookie name cannot contain whitespace or separators. PORT="4001 " used
+      // to leak straight into the name, making every request 401 for no visible
+      // reason.
+      expect(COOKIE_NAME).toMatch(/^[A-Za-z0-9_]+$/);
     });
   });
 

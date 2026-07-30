@@ -58,11 +58,17 @@ export interface ProcessManagerEvents {
  */
 export const defaultSpawner: ProcessSpawner = {
   spawn(command: string, args: string[], options: SpawnOptions): ChildProcess {
+    // `options.env` is already a complete environment (MessageBuilder.buildEnvironment
+    // starts from process.env). Re-merging process.env over it would resurrect the
+    // variables that were deliberately removed — which is exactly what happened:
+    // `delete CLAUDECODE` and the ANTHROPIC_API_KEY sanitisation both had no
+    // effect, so a bogus key kept reaching the CLI and every message failed with
+    // "Invalid API key · Fix external API key".
     return spawn(command, args, {
       cwd: options.cwd,
       shell: options.shell,
       windowsHide: options.windowsHide,
-      env: { ...process.env, ...options.env },
+      env: options.env ? options.env : { ...process.env },
     });
   },
 };

@@ -88,8 +88,8 @@
   function generateRightSection(oneOffId, permMode, modelValue, fontSize) {
     return '<div class="flex items-center gap-2">' +
       generateSearchControls(oneOffId) +
-      generatePermissionSelector(oneOffId, permMode) +
       generateModelSelector(oneOffId, modelValue) +
+      generatePermissionSelector(oneOffId, permMode) +
       '<div class="border-r border-gray-600 h-4"></div>' +
       generateFontSizeControls(oneOffId, fontSize) +
     '</div>';

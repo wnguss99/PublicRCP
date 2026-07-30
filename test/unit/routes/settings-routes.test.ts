@@ -21,6 +21,7 @@ function createMockDataWipeService(): jest.Mocked<DataWipeService> {
       projectsWiped: 0,
       globalDataDeleted: true,
       mcpTempDeleted: false,
+      archiveTempDeleted: false,
     }),
   };
 }

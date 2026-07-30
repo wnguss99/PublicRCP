@@ -49,7 +49,10 @@ jest.mock('../../../src/utils', () => ({
 }));
 
 describe('FileRepositoryFactory', () => {
-  const mockPathResolver = { getProjectPath: jest.fn().mockReturnValue('/mock/project/path') };
+  const mockPathResolver = {
+    getProjectPath: jest.fn().mockReturnValue('/mock/project/path'),
+    getProjectDataDir: jest.fn().mockReturnValue('/mock/data/dir'),
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();

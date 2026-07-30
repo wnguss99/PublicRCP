@@ -25,9 +25,11 @@
  */
 
 import { execSync, spawn } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import http from 'node:http';
 
@@ -38,6 +40,7 @@ const args = process.argv.slice(2);
 const ONLY_STATIC = args.includes('--static');
 const ONLY_SMOKE = args.includes('--smoke');
 const ONLY_REFS = args.includes('--refs-only'); // self-test 용 (빌드/스모크 생략)
+const ONLY_INSTANCES = args.includes('--instances'); // pre-commit 용 (빌드 없이 구성만)
 
 const C = {
   reset: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m',
@@ -46,6 +49,7 @@ const C = {
 const log = (m) => process.stdout.write(m + '\n');
 const ok = (m) => log(`${C.green}✓${C.reset} ${m}`);
 const fail = (m) => log(`${C.red}✗ ${m}${C.reset}`);
+const warn = (m) => log(`${C.yellow}⚠ ${m}${C.reset}`);
 const head = (m) => log(`\n${C.bold}${C.cyan}── ${m}${C.reset}`);
 
 const failures = [];
@@ -62,6 +66,220 @@ function walkJs(dir, acc = []) {
     else if (name.endsWith('.js') && !name.endsWith('.test.js') && !name.endsWith('.spec.js')) acc.push(p);
   }
   return acc;
+}
+
+// ---------------------------------------------------------------------------
+// 0. 멀티 인스턴스 구성 (ecosystem.config.js)
+// ---------------------------------------------------------------------------
+// 2026-07-30 사고 재발 방지. 당시 실제로 터진 것들:
+//   - 4000번(기존 사용자) CLAUDITO_HOME 이 새 경로로 바뀌어 프로젝트 5개가 사라짐
+//   - 평문 비밀번호가 든 ecosystem.config.js 가 git 에 추적된 상태였음
+// 포트/홈 중복, name 규칙 위반도 조용히 인스턴스를 하나 죽이므로 같이 막는다.
+function isInside(parent, child) {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function instanceConfig() {
+  head('0. 멀티 인스턴스 구성 검증');
+
+  const legacyHome = join(homedir(), '.claudito');
+  const legacyIndex = join(legacyHome, 'projects', 'index.json');
+  const legacyInstallExists = existsSync(legacyIndex);
+
+  const targets = [
+    { file: 'ecosystem.config.example.js', required: true, secretsAllowed: false },
+    { file: 'ecosystem.config.js', required: false, secretsAllowed: true },
+  ];
+
+  let checked = 0;
+
+  for (const target of targets) {
+    const configPath = join(ROOT, target.file);
+
+    if (!existsSync(configPath)) {
+      if (target.required) {
+        fail(`${target.file} 이 없다 (멀티 인스턴스 구성의 기준 파일)`);
+        failures.push('instance-config');
+      }
+      continue;
+    }
+
+    let apps;
+
+    try {
+      // require 로 읽어야 path.join / os.homedir 같은 실제 계산 결과를 검증할 수 있다.
+      const loaded = createRequire(import.meta.url)(configPath);
+      apps = loaded?.apps;
+    } catch (e) {
+      fail(`${target.file} 로드 실패: ${e.message}`);
+      failures.push('instance-config');
+      continue;
+    }
+
+    if (!Array.isArray(apps) || apps.length === 0) {
+      fail(`${target.file}: apps 배열이 비어 있다`);
+      failures.push('instance-config');
+      continue;
+    }
+
+    const ports = new Set();
+    const homes = new Set();
+    let legacyClaims = 0;
+
+    for (const app of apps) {
+      const env = app?.env || {};
+      const label = `${target.file} → ${app?.name ?? '(name 없음)'}`;
+
+      if (!env.PORT) {
+        fail(`${label}: env.PORT 가 없다`);
+        failures.push('instance-config');
+        continue;
+      }
+
+      // PM2 는 env 값을 문자열로 넘긴다. 숫자를 넣으면 비교 로직에서 어긋난다.
+      if (typeof env.PORT !== 'string') {
+        fail(`${label}: env.PORT 는 문자열이어야 한다 (현재 ${typeof env.PORT})`);
+        failures.push('instance-config');
+      }
+
+      if (app.name !== `claudito-${env.PORT}`) {
+        fail(`${label}: name 은 claudito-${env.PORT} 여야 한다 (pm2 로그/조작 시 포트 식별 불가)`);
+        failures.push('instance-config');
+      }
+
+      if (ports.has(String(env.PORT))) {
+        fail(`${label}: PORT ${env.PORT} 중복 — 뒤에 뜬 인스턴스가 EADDRINUSE 로 죽는다`);
+        failures.push('instance-config');
+      }
+      ports.add(String(env.PORT));
+
+      if (!env.CLAUDITO_HOME) {
+        fail(`${label}: env.CLAUDITO_HOME 가 없다 — 인스턴스끼리 데이터를 공유해 버린다`);
+        failures.push('instance-config');
+        continue;
+      }
+
+      if (!isAbsolute(env.CLAUDITO_HOME)) {
+        fail(`${label}: CLAUDITO_HOME 가 절대경로가 아니다 (${env.CLAUDITO_HOME})`);
+        failures.push('instance-config');
+      }
+
+      // 저장소 안에 두면 gitignore 되어 있어도 `git clean -xdf` 한 번에 사용자 데이터가 날아간다.
+      if (isInside(ROOT, env.CLAUDITO_HOME)) {
+        fail(`${label}: CLAUDITO_HOME 가 저장소 안이다 (${env.CLAUDITO_HOME}) — git clean 으로 사용자 데이터가 지워진다`);
+        failures.push('instance-config');
+      }
+
+      const homeKey = env.CLAUDITO_HOME.toLowerCase();
+
+      if (homes.has(homeKey)) {
+        fail(`${label}: CLAUDITO_HOME 중복 (${env.CLAUDITO_HOME}) — 두 사용자가 같은 데이터를 덮어쓴다`);
+        failures.push('instance-config');
+      }
+      homes.add(homeKey);
+
+      if (homeKey === legacyHome.toLowerCase()) {
+        legacyClaims++;
+      }
+
+      const weak = /change[_ ]?me/i;
+
+      if (target.secretsAllowed && typeof env.CLAUDITO_PASSWORD === 'string' && weak.test(env.CLAUDITO_PASSWORD)) {
+        fail(`${label}: 비밀번호가 아직 placeholder(${env.CLAUDITO_PASSWORD}) 다 — 실제 값으로 바꿔라`);
+        failures.push('instance-config');
+      }
+    }
+
+    // 기존 단일 인스턴스 설치가 있으면, 정확히 하나의 인스턴스가 그 홈을 이어받아야 한다.
+    // 아무도 안 잡으면 그 사용자의 프로젝트 목록이 통째로 빈 화면이 된다.
+    if (legacyInstallExists && legacyClaims !== 1) {
+      fail(
+        `${target.file}: ~/.claudito (기존 설치) 를 잡는 인스턴스가 ${legacyClaims}개 — ` +
+        '정확히 1개여야 한다. 0개면 기존 사용자의 프로젝트가 사라진다.'
+      );
+      failures.push('instance-config');
+    }
+
+    checked++;
+  }
+
+  // 평문 비밀번호 파일이 git 에 추적되면 안 된다.
+  try {
+    const tracked = execSync('git ls-files ecosystem.config.js .env', { cwd: ROOT, stdio: 'pipe' })
+      .toString()
+      .trim();
+
+    if (tracked) {
+      fail(`비밀정보 파일이 git 에 추적 중이다: ${tracked.split('\n').join(', ')} → git rm --cached 하라`);
+      failures.push('instance-config');
+    }
+  } catch {
+    // git 이 없는 환경(배포 서버 등)에서는 건너뛴다.
+  }
+
+  if (checked > 0 && !failures.includes('instance-config')) {
+    ok(`인스턴스 구성 통과 (검사 파일 ${checked}개)`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 0b. Claude 인증 환경 (2026-07-30 "Invalid API key" 사고 재발방지)
+// ---------------------------------------------------------------------------
+// 사고 요약: 사용자 환경변수에 ANTHROPIC_API_KEY=sk-ant-... (문서 placeholder)
+// 가 들어 있었다. Claude CLI 는 이 변수를 claude.ai 구독보다 우선하므로 모든
+// 대화가 "Invalid API key · Fix external API key" 로 실패했다. 게다가 코드의
+// 방어 로직(env 에서 삭제)이 defaultSpawner 의 `{...process.env, ...options.env}`
+// 재병합에 의해 무력화되어 있었다 — 삭제한 변수가 되살아났다.
+function claudeAuthEnv() {
+  head('0b. Claude 인증 환경 검증');
+
+  // (1) 지금 이 환경에 못 쓰는 키가 있는지
+  const key = process.env.ANTHROPIC_API_KEY;
+
+  if (key !== undefined) {
+    const trimmed = key.trim();
+    const unusable = trimmed === '' || !trimmed.startsWith('sk-') || trimmed.length < 40;
+
+    if (unusable) {
+      // 경고로만 둔다(배포 차단 X): 아래 두 정적 가드가 살아 있으면 코드가 이 값을
+      // 스폰 env 에서 제거하므로 대화는 정상 동작한다. 다만 환경 자체는 고쳐야
+      // 하므로 눈에 띄게 남긴다. 이 값을 쓰는 다른 도구는 여전히 깨진다.
+      warn(
+        `ANTHROPIC_API_KEY 가 사용 불가한 값이다 (길이 ${trimmed.length}). ` +
+        'claudito 는 이 값을 무시하지만 환경을 정리하라.'
+      );
+      log(`${C.dim}  정리: Remove-ItemProperty HKCU:\\Environment -Name ANTHROPIC_API_KEY  (그 후 PM2 데몬 재시작)${C.reset}`);
+    } else {
+      ok('ANTHROPIC_API_KEY 가 설정돼 있고 형식은 유효하다');
+    }
+  } else {
+    ok('ANTHROPIC_API_KEY 미설정 (구독 인증 사용 — 권장 상태)');
+  }
+
+  // (2) 스포너가 sanitize 된 env 를 되살리지 않는지 (정적 가드)
+  const spawnerPath = join(ROOT, 'src', 'agents', 'process-manager.ts');
+  const spawnerSrc = readFileSync(spawnerPath, 'utf-8');
+
+  if (/\.\.\.process\.env\s*,\s*\.\.\.options\.env/.test(spawnerSrc)) {
+    fail(
+      'defaultSpawner 가 `{...process.env, ...options.env}` 로 병합한다 — ' +
+      'env 에서 삭제한 ANTHROPIC_API_KEY/CLAUDECODE 가 되살아나 방어 로직이 무효화된다.'
+    );
+    failures.push('claude-auth-env');
+  } else {
+    ok('스포너가 sanitize 된 env 를 보존한다');
+  }
+
+  // (3) 방어 로직이 실제로 호출되는지 (정적 가드)
+  const builderSrc = readFileSync(join(ROOT, 'src', 'agents', 'message-builder.ts'), 'utf-8');
+
+  if (!/dropUnusableApiKey\s*\(/.test(builderSrc) || !/describeUnusableApiKey/.test(builderSrc)) {
+    fail('MessageBuilder.buildEnvironment 의 ANTHROPIC_API_KEY 방어 로직이 사라졌다.');
+    failures.push('claude-auth-env');
+  } else {
+    ok('buildEnvironment 에 ANTHROPIC_API_KEY 방어 로직이 있다');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,15 +441,22 @@ async function serverSmoke() {
 (async () => {
   log(`${C.bold}claudito 서버 안전 검증 게이트${C.reset}`);
 
-  if (ONLY_REFS) {
+  if (ONLY_INSTANCES) {
+    instanceConfig();
+    claudeAuthEnv();
+  } else if (ONLY_REFS) {
     frontendRefs();
   } else if (ONLY_SMOKE) {
     await serverSmoke();
   } else if (ONLY_STATIC) {
+    instanceConfig();
+    claudeAuthEnv();
     backendBuild();
     frontendSyntax();
     frontendRefs();
   } else {
+    instanceConfig();
+    claudeAuthEnv();
     backendBuild();
     frontendSyntax();
     frontendRefs();

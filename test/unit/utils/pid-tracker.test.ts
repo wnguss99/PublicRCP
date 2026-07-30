@@ -279,7 +279,7 @@ describe('FilePidTracker', () => {
         .mockImplementationOnce(() => true); // Second call: kill (pid, SIGTERM)
 
       // Is a Claude process
-      mockExecSync.mockReturnValue('CommandLine=node claude --session-id abc123');
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=node claude --session-id abc123');
 
       const tracker = new FilePidTracker(mockFs);
       const result = await tracker.cleanupOrphanProcesses();
@@ -299,8 +299,8 @@ describe('FilePidTracker', () => {
       // Process is running
       (process.kill as jest.Mock).mockImplementation(() => true);
 
-      // Is NOT a Claude process (PID reused)
-      mockExecSync.mockReturnValue('CommandLine=node some-other-app');
+      // PID reused: the live process was created long after we recorded ours.
+      mockExecSync.mockReturnValue('CREATED=2024-06-01T00:00:00.0000000Z\nCMD=node some-other-app');
 
       const tracker = new FilePidTracker(mockFs);
       const result = await tracker.cleanupOrphanProcesses();
@@ -308,6 +308,25 @@ describe('FilePidTracker', () => {
       expect(result.foundCount).toBe(1);
       expect(result.skippedPids).toContain(1234);
       expect(result.killedCount).toBe(0);
+    });
+
+    it('should kill our process even when the command line does not say claude', async () => {
+      // Windows wraps the CLI in cmd.exe, whose command line may not contain the
+      // word "claude". Creation time is what proves it is ours.
+      const existingProcesses: TrackedProcess[] = [
+        { pid: 1234, projectId: 'project-1', startedAt: '2024-01-01T00:00:00Z' },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify(existingProcesses));
+
+      (process.kill as jest.Mock).mockImplementation(() => true);
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=C:\\WINDOWS\\system32\\cmd.exe');
+
+      const tracker = new FilePidTracker(mockFs);
+      const result = await tracker.cleanupOrphanProcesses();
+
+      expect(result.killedPids).toContain(1234);
+      expect(result.killedCount).toBe(1);
     });
 
     it('should track failed kills', async () => {
@@ -325,7 +344,7 @@ describe('FilePidTracker', () => {
         }); // Kill fails
 
       // Is a Claude process
-      mockExecSync.mockReturnValue('CommandLine=node claude');
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=node claude');
 
       const tracker = new FilePidTracker(mockFs);
       const result = await tracker.cleanupOrphanProcesses();
@@ -355,8 +374,12 @@ describe('FilePidTracker', () => {
         return true;
       });
 
-      // Both are Claude processes
-      mockExecSync.mockReturnValue('CommandLine=node claude');
+      // Both are Claude processes. Creation time has to match each entry's
+      // startedAt or the reuse guard treats the PID as recycled.
+      mockExecSync.mockImplementation((cmd: string) => {
+        const created = cmd.includes('5678') ? '2024-01-01T01:00:00.0000000Z' : '2024-01-01T00:00:00.0000000Z';
+        return `CREATED=${created}\nCMD=node claude`;
+      });
 
       const tracker = new FilePidTracker(mockFs);
       mockFs.writeFileSync.mockClear();
@@ -386,11 +409,13 @@ describe('FilePidTracker', () => {
         return true;
       });
 
+      // 2000: creation time matches what we recorded => ours, killed.
+      // 3000: created months later => the PID was recycled, skipped.
       mockExecSync.mockImplementation((cmd: string) => {
         if (cmd.includes('2000')) {
-          return 'CommandLine=node claude';
+          return 'CREATED=2024-01-01T01:00:00.0000000Z\nCMD=node claude';
         }
-        return 'CommandLine=node other-app';
+        return 'CREATED=2024-06-01T00:00:00.0000000Z\nCMD=node other-app';
       });
 
       const tracker = new FilePidTracker(mockFs);
@@ -410,7 +435,7 @@ describe('FilePidTracker', () => {
       mockFs.readFileSync.mockReturnValue(JSON.stringify(existingProcesses));
 
       (process.kill as jest.Mock).mockImplementation(() => true);
-      mockExecSync.mockReturnValue('CommandLine=node @anthropic/claude-code');
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=node @anthropic/claude-code');
 
       const tracker = new FilePidTracker(mockFs);
       const result = await tracker.cleanupOrphanProcesses();
@@ -434,6 +459,64 @@ describe('FilePidTracker', () => {
       // Should not be identified as Claude process
       expect(result.skippedPids).toContain(1234);
       expect(result.killedCount).toBe(0);
+    });
+
+    it('should skip a PID whose creation time does not match the tracked start', async () => {
+      const existingProcesses: TrackedProcess[] = [
+        { pid: 1234, projectId: 'project-1', startedAt: '2024-01-01T00:00:00Z' },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify(existingProcesses));
+
+      (process.kill as jest.Mock).mockImplementation(() => true);
+
+      // The OS reports a process created a year later — the PID was recycled onto
+      // something else, even though its command line mentions claude (which is
+      // exactly what happens when another instance's agent lands on this PID).
+      mockExecSync.mockReturnValue('CREATED=2025-01-01T00:00:00.0000000Z\nCMD=node claude');
+
+      const tracker = new FilePidTracker(mockFs);
+      const result = await tracker.cleanupOrphanProcesses();
+
+      expect(result.skippedPids).toContain(1234);
+      expect(result.killedCount).toBe(0);
+    });
+
+    it('should kill by creation time when the command line is unreadable', async () => {
+      const existingProcesses: TrackedProcess[] = [
+        { pid: 1234, projectId: 'project-1', startedAt: '2024-01-01T00:00:00Z' },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify(existingProcesses));
+
+      (process.kill as jest.Mock).mockImplementation(() => true);
+
+      // A more privileged process hides its command line. Creation time still
+      // identifies it, so the orphan gets cleaned instead of leaking forever.
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=');
+
+      const tracker = new FilePidTracker(mockFs);
+      const result = await tracker.cleanupOrphanProcesses();
+
+      expect(result.killedPids).toContain(1234);
+      expect(result.killedCount).toBe(1);
+    });
+
+    it('should not shell out to wmic (removed in current Windows builds)', async () => {
+      const existingProcesses: TrackedProcess[] = [
+        { pid: 1234, projectId: 'project-1', startedAt: '2024-01-01T00:00:00Z' },
+      ];
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify(existingProcesses));
+
+      (process.kill as jest.Mock).mockImplementation(() => true);
+      mockExecSync.mockReturnValue('CREATED=2024-01-01T00:00:00.0000000Z\nCMD=node claude');
+
+      const tracker = new FilePidTracker(mockFs);
+      await tracker.cleanupOrphanProcesses();
+
+      const commands = mockExecSync.mock.calls.map((call) => String(call[0]));
+      expect(commands.some((cmd) => cmd.includes('wmic'))).toBe(false);
     });
 
     it('should handle execSync timeout', async () => {

@@ -81,25 +81,10 @@ describe('DefaultProjectService', () => {
         });
       });
 
-      it('should initialize .claudito folder', async () => {
-        mockFs.exists
-          .mockResolvedValueOnce(true) // folder exists
-          .mockResolvedValueOnce(false); // .claudito does not exist
-
-        await service.createProject({
-          path: '/test/project',
-          createNew: false,
-        });
-
-        expect(mockFs.mkdir).toHaveBeenCalledWith(
-          path.join('/test/project', '.claudito')
-        );
-      });
-
-      it('should not create .claudito if it already exists', async () => {
-        mockFs.exists
-          .mockResolvedValueOnce(true) // folder exists
-          .mockResolvedValueOnce(true); // .claudito exists
+      // Project data lives in {CLAUDITO_HOME}/projects/{id}/ now, so nothing is
+      // written into the project root. Multiple instances can share a path.
+      it('should not create a .claudito folder in the project root', async () => {
+        mockFs.exists.mockResolvedValueOnce(true); // folder exists
 
         await service.createProject({
           path: '/test/project',
@@ -112,9 +97,7 @@ describe('DefaultProjectService', () => {
 
     describe('when createNew is true (create new folder)', () => {
       it('should create project folder when it does not exist', async () => {
-        mockFs.exists
-          .mockResolvedValueOnce(false) // project folder does not exist
-          .mockResolvedValueOnce(false); // .claudito does not exist
+        mockFs.exists.mockResolvedValueOnce(false); // project folder does not exist
 
         const options: CreateProjectOptions = {
           path: '/test/new-project',
@@ -125,10 +108,8 @@ describe('DefaultProjectService', () => {
         const result = await service.createProject(options);
 
         expect(result.success).toBe(true);
+        expect(mockFs.mkdir).toHaveBeenCalledTimes(1);
         expect(mockFs.mkdir).toHaveBeenCalledWith('/test/new-project');
-        expect(mockFs.mkdir).toHaveBeenCalledWith(
-          path.join('/test/new-project', '.claudito')
-        );
       });
 
       it('should return error when folder already exists', async () => {
