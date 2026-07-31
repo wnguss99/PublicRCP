@@ -195,7 +195,9 @@ describe('ClaudeBinary', () => {
       expect(mockSpawner.spawn).toHaveBeenCalledWith(
         'claude',
         expect.arrayContaining(['--print']),
-        expect.objectContaining({ cwd: '/test/path', shell: false })
+        // Windows needs a shell to launch .cmd/.bat (Node.js #29466),
+        // so this is platform dependent rather than always false.
+        expect.objectContaining({ cwd: '/test/path', shell: process.platform === 'win32' })
       );
     });
 

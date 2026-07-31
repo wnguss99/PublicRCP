@@ -17,11 +17,15 @@
  *                        앞으로도 계속 걸러진다.
  *   4. server-smoke    : 빌드된 dist 를 임시 포트로 실제 부팅해 GET /login 200 확인.
  *                        서버가 안 뜨면(=시스템 사용 불가) 무조건 FAIL.
+ *   5. unit-tests      : --with-tests 일 때만. 전체 Jest 스위트(약 40초).
+ *                        pre-push 전용이고 재시작 경로에는 일부러 안 넣는다 —
+ *                        테스트 한 건이 흔들렸다고 장애 복구가 막히면 안 된다.
  *
  * 사용:
- *   node scripts/validate.mjs           # 전체 (CI / pre-push)
- *   node scripts/validate.mjs --static  # 스모크 제외 (빠른 로컬 점검)
- *   node scripts/validate.mjs --smoke   # 스모크만
+ *   node scripts/validate.mjs              # 전체 (재시작 게이트)
+ *   node scripts/validate.mjs --with-tests # 전체 + 유닛 테스트 (pre-push)
+ *   node scripts/validate.mjs --static     # 스모크 제외 (빠른 로컬 점검)
+ *   node scripts/validate.mjs --smoke      # 스모크만
  */
 
 import { execSync, spawn } from 'node:child_process';
@@ -41,6 +45,7 @@ const ONLY_STATIC = args.includes('--static');
 const ONLY_SMOKE = args.includes('--smoke');
 const ONLY_REFS = args.includes('--refs-only'); // self-test 용 (빌드/스모크 생략)
 const ONLY_INSTANCES = args.includes('--instances'); // pre-commit 용 (빌드 없이 구성만)
+const WITH_TESTS = args.includes('--with-tests');    // pre-push 용 (유닛 테스트 포함)
 
 const C = {
   reset: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m',
@@ -435,6 +440,76 @@ async function serverSmoke() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// 4b. 모델 목록 단일 출처 검증
+// ---------------------------------------------------------------------------
+// 2026-07-31 발견: index.html 의 <option> 과 app.js 의 displayNames 맵에 모델
+// ID 가 하드코딩돼 있어서, 백엔드 SUPPORTED_MODELS 에 Opus 5 를 추가해도
+//   - 드롭다운에 안 나타나 선택 자체가 불가능했고
+//   - override 없는 프로젝트는 실제로 Opus 5 로 도는데 화면은 "Sonnet 4.6" 표시
+// 하는 상태였다. 프론트는 이제 /api/settings/models 로 목록을 받는다.
+// 리터럴이 다시 들어오면 같은 드리프트가 재발하므로 여기서 막는다.
+const MODEL_ID_RE = /claude-(?:opus|sonnet|haiku)-[0-9][\w-]*/g;
+
+function isCommentLine(line) {
+  const t = line.trim();
+  return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('<!--');
+}
+
+function modelSingleSource() {
+  head('4b. 모델 목록 단일 출처 (프론트 하드코딩 금지)');
+
+  const files = [
+    ...walkJs(PUBLIC_JS),
+    join(ROOT, 'public', 'index.html'),
+  ].filter((f) => existsSync(f));
+
+  const offenders = [];
+
+  for (const file of files) {
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+
+      const hits = line.match(MODEL_ID_RE);
+      if (hits) offenders.push(`${relative(ROOT, file)}:${i + 1}  ${hits.join(', ')}`);
+    });
+  }
+
+  if (offenders.length > 0) {
+    fail(`프론트에 모델 ID 가 하드코딩돼 있다 (${offenders.length}곳)`);
+    log(C.dim + offenders.slice(0, 15).map((o) => '    ' + o).join('\n') + C.reset);
+    log(C.dim + '    → src/config/models.ts 를 유일한 출처로 두고 /api/settings/models 로 받아라.' + C.reset);
+    failures.push('model-single-source');
+    return;
+  }
+
+  ok('프론트에 하드코딩된 모델 ID 없음 (백엔드 config 가 유일한 출처)');
+}
+
+// ---------------------------------------------------------------------------
+// 5. 유닛 테스트 (pre-push 에서만)
+// ---------------------------------------------------------------------------
+// 재시작 경로에는 일부러 넣지 않는다. 테스트 한 건이 흔들렸다고 장애 복구가
+// 막히면 안 된다. 재시작은 "서버가 뜨는가"(스모크)로 충분하고, "코드가 옳은가"는
+// 저장소로 나가기 전에 본다.
+function unitTests() {
+  head('5. 유닛 테스트');
+
+  try {
+    execSync('npx jest --silent', { cwd: ROOT, stdio: 'pipe' });
+    ok('전체 유닛 테스트 통과');
+  } catch (e) {
+    fail('유닛 테스트 실패');
+    const out = (e.stdout?.toString() || '') + (e.stderr?.toString() || '');
+    const lines = out.split(/\r?\n/).filter((l) => /✕|●|Tests:|Suites:/.test(l));
+    log(C.dim + lines.slice(0, 25).join('\n') + C.reset);
+    failures.push('unit-tests');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -454,14 +529,22 @@ async function serverSmoke() {
     backendBuild();
     frontendSyntax();
     frontendRefs();
+    modelSingleSource();
   } else {
     instanceConfig();
     claudeAuthEnv();
     backendBuild();
     frontendSyntax();
     frontendRefs();
-    if (!failures.includes('backend-build')) await serverSmoke();
-    else log(`\n${C.yellow}⚠ 백엔드 빌드 실패로 스모크 테스트 생략${C.reset}`);
+    modelSingleSource();
+
+    // 빌드가 깨졌으면 dist 가 낡았거나 없으므로 스모크/테스트 결과가 무의미하다.
+    if (failures.includes('backend-build')) {
+      log(`\n${C.yellow}⚠ 백엔드 빌드 실패 — 스모크/유닛 테스트 생략${C.reset}`);
+    } else {
+      await serverSmoke();
+      if (WITH_TESTS) unitTests();
+    }
   }
 
   log('');

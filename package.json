@@ -26,6 +26,7 @@
     "typecheck": "npm run build && npm run typecheck:frontend",
     "validate": "node scripts/validate.mjs",
     "validate:static": "node scripts/validate.mjs --static",
+    "validate:push": "node scripts/validate.mjs --with-tests",
     "validate:instances": "node scripts/validate.mjs --instances",
     "pm2": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pm2.ps1",
     "instances:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-instances.ps1",

@@ -3,6 +3,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { streamText, LanguageModel } from 'ai';
 
 import { getLogger, Logger } from '../utils/logger';
+import { DEFAULT_MODEL } from '../config/models';
 import {
   Agent,
   AgentEvents,
@@ -74,7 +75,8 @@ export class AnthropicSdkAgent implements Agent {
     this.projectId = config.projectId;
     this.projectPath = config.projectPath;
     this._mode = config.mode || 'interactive';
-    this._model = config.model || 'claude-sonnet-4-6';
+    // 하드코딩된 폴백은 config/models.ts 의 기본값과 어긋난 채로 남는다.
+    this._model = config.model || DEFAULT_MODEL;
     this._agentProfile = config.agentProfile;
     this.emitter = new EventEmitter();
     this.logger = getLogger('anthropic-sdk-agent');

@@ -4,7 +4,7 @@
 # 우회(긴급): git push --no-verify  (지양 — 다음 커밋이라도 정정할 것)
 
 echo "[pre-push] 서버 안전 검증 게이트 실행..."
-node scripts/validate.mjs
+node scripts/validate.mjs --with-tests
 if [ $? -ne 0 ]; then
   echo ""
   echo "[pre-push] 검증 실패 — push 차단됨."

@@ -3,6 +3,7 @@ import {
   SettingsUpdate,
   DEFAULT_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PROMPT_TEMPLATES,
+  DEFAULT_SETTINGS,
   FileSystemAdapter,
 } from '../../../src/repositories/settings';
 
@@ -505,15 +506,15 @@ describe('FileSettingsRepository', () => {
       const settings = await repository.get();
 
       // Old model IDs should fall back to defaults
-      expect(settings.ralphLoop.defaultWorkerModel).toBe('claude-opus-4-6');
-      expect(settings.ralphLoop.defaultReviewerModel).toBe('claude-sonnet-4-6');
+      expect(settings.ralphLoop.defaultWorkerModel).toBe(DEFAULT_SETTINGS.ralphLoop.defaultWorkerModel);
+      expect(settings.ralphLoop.defaultReviewerModel).toBe(DEFAULT_SETTINGS.ralphLoop.defaultReviewerModel);
     });
 
-    it('should keep non-old model IDs as-is during merge', async () => {
+    it('should keep currently supported model IDs as-is during merge', async () => {
       const saved = {
         ralphLoop: {
           defaultWorkerModel: 'claude-opus-4-6',
-          defaultReviewerModel: 'custom-model-v2',
+          defaultReviewerModel: 'claude-sonnet-4-5-20250929',
         },
       };
       mockFileSystem.existsSync.mockReturnValueOnce(true).mockReturnValueOnce(true);
@@ -521,8 +522,30 @@ describe('FileSettingsRepository', () => {
       repository = new FileSettingsRepository(testDataDir, mockFileSystem);
       const settings = await repository.get();
 
+      // Sonnet 4.5 is in SUPPORTED_MODELS, so it must survive. The old
+      // hand-maintained OLD_MODEL_IDS list wrongly included it, which made
+      // picking Sonnet 4.5 for a Ralph Loop look saved but silently revert.
       expect(settings.ralphLoop.defaultWorkerModel).toBe('claude-opus-4-6');
-      expect(settings.ralphLoop.defaultReviewerModel).toBe('custom-model-v2');
+      expect(settings.ralphLoop.defaultReviewerModel).toBe('claude-sonnet-4-5-20250929');
+    });
+
+    it('should drop model IDs the backend no longer supports', async () => {
+      const saved = {
+        ralphLoop: {
+          defaultWorkerModel: 'custom-model-v2',
+          defaultReviewerModel: 'claude-opus-3-imaginary',
+        },
+      };
+      mockFileSystem.existsSync.mockReturnValueOnce(true).mockReturnValueOnce(true);
+      mockFileSystem.readFileSync.mockReturnValue(JSON.stringify(saved));
+      repository = new FileSettingsRepository(testDataDir, mockFileSystem);
+      const settings = await repository.get();
+
+      // Keeping an unsupported id would hand `--model custom-model-v2` to the
+      // CLI, which rejects it at run time. Falling back to a working default
+      // fails at config load instead of mid-loop.
+      expect(settings.ralphLoop.defaultWorkerModel).toBe(DEFAULT_SETTINGS.ralphLoop.defaultWorkerModel);
+      expect(settings.ralphLoop.defaultReviewerModel).toBe(DEFAULT_SETTINGS.ralphLoop.defaultReviewerModel);
     });
   });
 

@@ -4377,21 +4377,53 @@
       });
   }
 
+  // 모델 목록/표시명/기본값의 유일한 출처는 백엔드 src/config/models.ts 이고,
+  // 프론트에서는 ModelCatalog 모듈이 그 사본을 들고 있는다.
+  // (자세한 배경은 public/js/modules/model-catalog.js 주석 참고)
+  var MODEL_SELECT_IDS = [
+    'project-model-select',
+    'ralph-config-worker-model',
+    'ralph-config-reviewer-model'
+  ];
+
+  function populateModelSelects() {
+    MODEL_SELECT_IDS.forEach(function(id) {
+      ModelCatalog.populateSelect($('#' + id));
+    });
+  }
+
+  function loadModelCatalog() {
+    return ModelCatalog.load()
+      .done(populateModelSelects)
+      .fail(function() {
+        // 카탈로그를 못 받으면 드롭다운이 비어 버린다. 조용히 넘어가면 사용자는
+        // "모델을 못 고르는" 상태를 원인 없이 겪게 되므로 표면화한다.
+        showToast('모델 목록을 불러오지 못했습니다. 새로고침 해주세요.', 'warning');
+      });
+  }
+
   function loadProjectModel(projectId) {
     api.getProjectModel(projectId)
       .done(function(data) {
-        // data = { projectModel, effectiveModel, globalDefault }
-        // If no project override, default to Opus
-        var modelValue = data.projectModel || 'claude-sonnet-4-6';
-        $('#project-model-select').val(modelValue);
+        // data = { projectModel, defaultModel, effectiveModel, availableModels }
+        // 이 응답 자체가 목록의 출처이기도 하다. 카탈로그가 아직 안 왔으면 여기서 채운다.
+        if (!ModelCatalog.isLoaded() && data.availableModels) {
+          ModelCatalog.setModels(data.availableModels);
+          populateModelSelects();
+        }
+
+        ModelCatalog.setDefault(data.defaultModel);
+
+        // override 가 없으면 실제로 적용되는 값(effectiveModel = 백엔드 기본값)을 보여준다.
+        // 예전에는 'claude-sonnet-4-6' 을 박아둬서, 실제로는 Opus 5 로 돌면서
+        // 화면만 Sonnet 4.6 이라고 표시하는 거짓말을 했다.
+        $('#project-model-select').val(data.projectModel || data.effectiveModel || '');
         state.currentProjectModel = data.projectModel;
         state.effectiveModel = data.effectiveModel;
-        state.globalDefaultModel = data.globalDefault;
+        state.globalDefaultModel = data.defaultModel;
         updateModelSelectorTitle(data);
       })
       .fail(function() {
-        // On failure, default to Sonnet 4.6
-        $('#project-model-select').val('claude-sonnet-4-6');
         state.currentProjectModel = null;
       });
   }
@@ -4424,26 +4456,23 @@
   }
 
   function updateModelSelectorTitle(modelData) {
-    var title = 'Select Claude model for this project';
+    var title;
 
     if (modelData.projectModel) {
       title = 'Using: ' + getModelDisplayName(modelData.projectModel) + ' (project override)';
     } else {
-      title = 'Using: Sonnet 4.6 (default)';
+      // 기본값 이름도 하드코딩하지 않는다 - 백엔드 DEFAULT_MODEL 이 바뀌면 같이 바뀐다.
+      var fallback = modelData.effectiveModel || modelData.defaultModel;
+      title = fallback
+        ? 'Using: ' + getModelDisplayName(fallback) + ' (default)'
+        : 'Select Claude model for this project';
     }
 
     $('#model-selector').attr('title', title);
   }
 
   function getModelDisplayName(modelId) {
-    var displayNames = {
-      'claude-opus-4-6': 'Opus 4.6',
-      'claude-sonnet-4-6': 'Sonnet 4.6',
-      'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
-      'claude-haiku-4-5-20251001': 'Haiku 4.5'
-    };
-
-    return displayNames[modelId] || modelId;
+    return ModelCatalog.getDisplayName(modelId);
   }
 
   function handleProjectModelChange(model) {
@@ -4479,8 +4508,8 @@
         }
       })
       .fail(function(xhr) {
-        // Revert the selector to the previous value or Opus if no override
-        $('#project-model-select').val(state.currentProjectModel || 'claude-sonnet-4-6');
+        // 저장에 실패했으므로 드롭다운을 서버가 실제로 갖고 있는 값으로 되돌린다.
+        $('#project-model-select').val(state.currentProjectModel || state.effectiveModel || '');
         showErrorToast(xhr, 'Failed to change model');
       });
   }
@@ -5261,14 +5290,9 @@
         // Reset form with default values from settings
         $('#ralph-config-task-description').val('');
         $('#ralph-config-max-turns').val(state.settings?.ralphLoop?.defaultMaxTurns || 5);
-        // Always default to Opus for worker model
-        var workerModel = state.settings?.ralphLoop?.defaultWorkerModel || 'claude-opus-4-6';
-        // Override old model IDs with new defaults
-        if (workerModel === 'claude-sonnet-4-20250514' || workerModel === 'claude-opus-4-20250514' || workerModel === 'claude-sonnet-4-5-20250929') {
-          workerModel = 'claude-opus-4-6';
-        }
-        $('#ralph-config-worker-model').val(workerModel);
-        $('#ralph-config-reviewer-model').val(state.settings?.ralphLoop?.defaultReviewerModel || 'claude-sonnet-4-6');
+        // 설정에 없거나 카탈로그에서 사라진 모델이면 백엔드 기본값으로 떨어뜨린다.
+        $('#ralph-config-worker-model').val(ModelCatalog.resolve(state.settings?.ralphLoop?.defaultWorkerModel));
+        $('#ralph-config-reviewer-model').val(ModelCatalog.resolve(state.settings?.ralphLoop?.defaultReviewerModel));
         $('#ralph-config-worker-system-prompt').val('');
         $('#ralph-config-reviewer-system-prompt').val('');
 
@@ -5292,14 +5316,9 @@
         // Reset form with default values from settings
         $('#ralph-config-task-description').val('');
         $('#ralph-config-max-turns').val(state.settings?.ralphLoop?.defaultMaxTurns || 5);
-        // Always default to Opus for worker model
-        var workerModel = state.settings?.ralphLoop?.defaultWorkerModel || 'claude-opus-4-6';
-        // Override old model IDs with new defaults
-        if (workerModel === 'claude-sonnet-4-20250514' || workerModel === 'claude-opus-4-20250514' || workerModel === 'claude-sonnet-4-5-20250929') {
-          workerModel = 'claude-opus-4-6';
-        }
-        $('#ralph-config-worker-model').val(workerModel);
-        $('#ralph-config-reviewer-model').val(state.settings?.ralphLoop?.defaultReviewerModel || 'claude-sonnet-4-6');
+        // 설정에 없거나 카탈로그에서 사라진 모델이면 백엔드 기본값으로 떨어뜨린다.
+        $('#ralph-config-worker-model').val(ModelCatalog.resolve(state.settings?.ralphLoop?.defaultWorkerModel));
+        $('#ralph-config-reviewer-model').val(ModelCatalog.resolve(state.settings?.ralphLoop?.defaultReviewerModel));
         $('#ralph-config-worker-system-prompt').val('');
         $('#ralph-config-reviewer-system-prompt').val('');
 
@@ -6505,6 +6524,10 @@
 
     // Initialize ApiClient (sets up global 401 redirect handler)
     ApiClient.init();
+
+    // 모델 드롭다운은 이제 비어 있는 상태로 시작한다. 여기서 채우지 않으면
+    // 사용자는 모델을 아예 고를 수 없으므로, 로그인 직후 한 번 받아온다.
+    loadModelCatalog();
 
     // Initialize ResourceMonitor to track asset loading failures
     if (ResourceMonitor) {

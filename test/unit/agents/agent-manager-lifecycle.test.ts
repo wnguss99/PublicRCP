@@ -16,6 +16,7 @@ import {
   createTestConversation,
 } from '../helpers/mock-factories';
 import { ProjectStatus } from '../../../src/repositories/project';
+import { DEFAULT_MODEL } from '../../../src/config/models';
 
 jest.mock('../../../src/utils', () => ({
   getLogger: jest.fn().mockReturnValue({
@@ -1232,6 +1233,7 @@ describe('AgentManager Lifecycle Tests', () => {
         sessionId: null,
         permissionMode: null,
         hasActiveOneOffAgents: false,
+        contextUsage: null,
       });
 
       await agentManager.startInteractiveAgent(projectId);
@@ -1312,7 +1314,8 @@ describe('AgentManager Lifecycle Tests', () => {
 
       expect(mockAgentFactory.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'claude-sonnet-4-6',  // This is the DEFAULT_MODEL from config/models.ts
+          // Read from source so changing the default model does not break this.
+          model: DEFAULT_MODEL,
         })
       );
     });

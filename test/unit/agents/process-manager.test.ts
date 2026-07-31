@@ -11,7 +11,12 @@ jest.mock('child_process', () => {
   const actual = jest.requireActual('child_process');
   return {
     ...actual,
-    execFile: jest.fn((cmd: string, args: string[], cb: (err: Error | null) => void) => cb(null)),
+    // 소스는 execFile(cmd, args, options, callback) 4인자로 호출한다.
+    // 마지막 인자를 콜백으로 집어야 시그니처 변경에 다시 깨지지 않는다.
+    execFile: jest.fn((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1];
+      if (typeof cb === 'function') { (cb as (err: Error | null) => void)(null); }
+    }),
     spawn: jest.fn(() => new EventEmitter()),
   };
 });
@@ -86,12 +91,15 @@ describe('ProcessManager', () => {
       const result = pm.spawn('claude', ['--json'], '/tmp/project');
 
       expect(result).toBe(mockChild);
+      // Windows 에서는 PATH/PATHEXT 를 훑어 claude.CMD 절대경로로 해석한다.
+      // 해석에 실패하면 원래 이름을 그대로 쓰므로 둘 다 허용한다.
       expect(mockSpawner.spawn).toHaveBeenCalledWith(
-        'claude',
+        expect.stringMatching(/(^claude$|claude\.(CMD|cmd|exe|bat)$)/),
         ['--json'],
         expect.objectContaining({
           cwd: '/tmp/project',
-          shell: false,
+          // Windows 는 .cmd/.bat 실행에 shell 이 필요하다 (Node.js #29466).
+          shell: process.platform === 'win32',
           windowsHide: true,
         })
       );
@@ -101,7 +109,7 @@ describe('ProcessManager', () => {
       pm.spawn('claude', [], '/tmp', { MY_VAR: 'test' });
 
       expect(mockSpawner.spawn).toHaveBeenCalledWith(
-        'claude',
+        expect.stringMatching(/(^claude$|claude\.(CMD|cmd|exe|bat)$)/),
         [],
         expect.objectContaining({ env: { MY_VAR: 'test' } })
       );
@@ -353,9 +361,9 @@ describe('ProcessManager', () => {
     });
 
     it('should call taskkill with /F /T flags on stop', async () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null)
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(null);
+      });
       pm.spawn('claude', [], '/tmp');
 
       await pm.stop();
@@ -363,16 +371,16 @@ describe('ProcessManager', () => {
       expect(mockExecFile).toHaveBeenCalledWith(
         'taskkill',
         ['/PID', '1234', '/F', '/T'],
+        { windowsHide: true },
         expect.any(Function)
       );
       expect(pm.getProcess()).toBeNull();
     });
 
     it('should handle taskkill error on stop and still clean up', async () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
-          cb(new Error('process not found'))
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(new Error('process not found'));
+      });
       pm.spawn('claude', [], '/tmp');
 
       await pm.stop();
@@ -381,10 +389,9 @@ describe('ProcessManager', () => {
     });
 
     it('should handle taskkill non-not-found error on stop', async () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
-          cb(new Error('access denied'))
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(new Error('access denied'));
+      });
       pm.spawn('claude', [], '/tmp');
 
       await pm.stop();
@@ -422,9 +429,9 @@ describe('ProcessManager', () => {
     });
 
     it('should call taskkill on kill', () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null)
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(null);
+      });
       pm.spawn('claude', [], '/tmp');
 
       pm.kill();
@@ -432,16 +439,16 @@ describe('ProcessManager', () => {
       expect(mockExecFile).toHaveBeenCalledWith(
         'taskkill',
         ['/PID', '1234', '/F', '/T'],
+        { windowsHide: true },
         expect.any(Function)
       );
       expect(pm.getProcess()).toBeNull();
     });
 
     it('should handle taskkill error callback on kill', () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
-          cb(new Error('kill failed'))
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(new Error('kill failed'));
+      });
       pm.spawn('claude', [], '/tmp');
 
       pm.kill();
@@ -490,24 +497,24 @@ describe('ProcessManager', () => {
     });
 
     it('should call taskkill on Windows', async () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null)
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(null);
+      });
 
       await ProcessManager.killProcess(5678, 'SIGTERM', 'win32');
 
       expect(mockExecFile).toHaveBeenCalledWith(
         'taskkill',
         ['/PID', '5678', '/F', '/T'],
+        { windowsHide: true },
         expect.any(Function)
       );
     });
 
     it('should resolve even when taskkill reports error', async () => {
-      mockExecFile.mockImplementation(
-        (_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
-          cb(new Error('process not found'))
-      );
+      mockExecFile.mockImplementation((...callArgs: unknown[]) => {
+        (callArgs[callArgs.length - 1] as (err: Error | null) => void)(new Error('process not found'));
+      });
 
       await expect(ProcessManager.killProcess(5678, 'SIGTERM', 'win32')).resolves.toBeUndefined();
     });

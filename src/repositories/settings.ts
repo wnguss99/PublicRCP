@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { DockerSettings } from '../services/docker/types';
+import { isValidModel } from '../config/models';
 
 export interface PermissionRule {
   tool: string;
@@ -339,7 +340,7 @@ export interface GlobalSettings {
   agentProfiles: AgentProfile[];
 }
 
-const DEFAULT_SETTINGS: GlobalSettings = {
+export const DEFAULT_SETTINGS: GlobalSettings = {
   maxConcurrentAgents: 3,
   claudePermissions: {
     dangerouslySkipPermissions: false,
@@ -556,10 +557,18 @@ export class FileSettingsRepository implements SettingsRepository {
     }
   }
 
+  /**
+   * Drops model ids that are no longer supported so the caller falls back to the
+   * current default.
+   *
+   * This used to hold a hand-maintained OLD_MODEL_IDS list, which had drifted:
+   * it listed `claude-sonnet-4-5-20250929`, a model that is still in
+   * SUPPORTED_MODELS. Picking Sonnet 4.5 for a Ralph Loop therefore looked like
+   * it saved, then silently reverted to the default on the next read. Deriving
+   * from SUPPORTED_MODELS keeps the two from disagreeing again.
+   */
   private migrateOldModelId(modelId: string | undefined): string | undefined {
-    const OLD_MODEL_IDS = ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-sonnet-4-5-20250929'];
-
-    if (modelId && OLD_MODEL_IDS.includes(modelId)) {
+    if (modelId && !isValidModel(modelId)) {
       return undefined;
     }
 

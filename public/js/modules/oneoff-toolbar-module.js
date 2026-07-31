@@ -37,7 +37,7 @@
 
   function generateToolbarHtml(oneOffId) {
     var permMode = state.permissionMode || 'plan';
-    var modelValue = state.currentProjectModel || 'claude-sonnet-4-6';
+    var modelValue = ModelCatalog.resolve(state.currentProjectModel);
     var fontSize = state.fontSize || 14;
 
     return '<div class="oneoff-toolbar flex items-center justify-between gap-2 p-2 border-b border-gray-700" data-oneoff-id="' + oneOffId + '">' +
@@ -138,19 +138,9 @@
   }
 
   function generateModelSelector(oneOffId, modelValue) {
-    var models = [
-      { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-      { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5' },
-      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' }
-    ];
-
-    var options = '';
-
-    for (var i = 0; i < models.length; i++) {
-      var selected = models[i].value === modelValue ? ' selected' : '';
-      options += '<option value="' + models[i].value + '" class="bg-gray-700 text-white"' + selected + '>' + models[i].label + '</option>';
-    }
+    // 목록은 ModelCatalog(= 백엔드 src/config/models.ts) 에서만 온다.
+    // 여기에 배열을 다시 박으면 백엔드에 모델을 추가해도 이 탭에서만 안 보인다.
+    var options = ModelCatalog.buildOptionsHtml(modelValue, 'bg-gray-700 text-white');
 
     return '<div class="flex items-center bg-gray-700 rounded text-xs h-6" title="Select Claude model">' +
       '<select class="oneoff-model-select bg-gray-700 text-white text-xs px-1.5 h-full rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-purple-500 appearance-none pr-5" ' +
@@ -495,7 +485,7 @@
   }
 
   function syncModel(modelValue) {
-    $('.oneoff-model-select').val(modelValue || 'claude-sonnet-4-6');
+    $('.oneoff-model-select').val(ModelCatalog.resolve(modelValue));
   }
 
   function syncFontSize(size) {

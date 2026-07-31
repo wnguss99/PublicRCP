@@ -95,18 +95,14 @@
           '<div>' +
             '<label class="block text-xs text-gray-400 mb-1">Worker Model</label>' +
             '<select id="ralph-worker-model" class="w-full p-2 bg-gray-700 text-gray-200 rounded text-sm" ' + disabled + '>' +
-              '<option value="claude-opus-4-6" selected>Claude Opus 4.6</option>' +
-              '<option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>' +
-              '<option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>' +
+              ModelCatalog.buildOptionsHtml(ModelCatalog.getDefault()) +
             '</select>' +
           '</div>' +
         '</div>' +
         '<div>' +
           '<label class="block text-xs text-gray-400 mb-1">Reviewer Model</label>' +
           '<select id="ralph-reviewer-model" class="w-full p-2 bg-gray-700 text-gray-200 rounded text-sm" ' + disabled + '>' +
-            '<option value="claude-opus-4-6" selected>Claude Opus 4.6</option>' +
-            '<option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>' +
-            '<option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>' +
+            ModelCatalog.buildOptionsHtml(ModelCatalog.getDefault()) +
           '</select>' +
         '</div>' +
       '</div>' +
