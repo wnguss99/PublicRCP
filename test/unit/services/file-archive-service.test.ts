@@ -6,8 +6,31 @@ import {
   needsSplit,
   splitArchive,
   cleanupArchive,
+  createZipArchive,
   MAX_ATTACHMENT_SIZE,
 } from '../../../src/services/file-archive-service';
+
+// archiver v8 is ESM-only, so the lazy require() inside file-archive-service
+// cannot resolve under Jest's CommonJS registry. These tests are about the paths
+// and the skipped-file reporting, not the compression, so a stream stand-in is
+// enough to exercise the real code path.
+jest.mock('archiver', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { PassThrough } = require('stream') as typeof import('stream');
+
+  class ZipArchive extends PassThrough {
+    file(): this {
+      return this;
+    }
+
+    finalize(): Promise<void> {
+      this.end();
+      return Promise.resolve();
+    }
+  }
+
+  return { ZipArchive };
+});
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'archive-test-'));
@@ -173,6 +196,91 @@ describe('file-archive-service', () => {
 
     it('does not throw for non-existent file', () => {
       expect(() => cleanupArchive(path.join(tmpDir, 'nope.zip'))).not.toThrow();
+    });
+  });
+
+  // A user asking to email an existing 30 MB .zip had that file attached directly,
+  // then split — and splitArchive deleted the source. Their file was destroyed
+  // just because they asked to send it.
+  describe('splitArchive source protection', () => {
+    it('keeps the source file when deleteSource is false', async () => {
+      const filePath = createTempFile(tmpDir, 250, 'user-owned.zip');
+
+      await splitArchive(filePath, 100, { deleteSource: false });
+
+      expect(fs.existsSync(filePath)).toBe(true);
+    });
+
+    it('writes parts to outputDir instead of the user directory', async () => {
+      const filePath = createTempFile(tmpDir, 250, 'user-owned.zip');
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parts-'));
+
+      const result = await splitArchive(filePath, 100, { deleteSource: false, outputDir: outDir });
+
+      for (const part of result.parts) {
+        expect(path.dirname(part)).toBe(outDir);
+      }
+
+      const strays = fs.readdirSync(tmpDir).filter((f) => f.startsWith('user-owned.zip.'));
+      expect(strays).toEqual([]);
+
+      fs.rmSync(outDir, { recursive: true, force: true });
+    });
+
+    it('still deletes the source by default (temp archives we created)', async () => {
+      const filePath = createTempFile(tmpDir, 250, 'ours.zip');
+
+      await splitArchive(filePath, 100);
+
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+  });
+
+  describe('createZipArchive', () => {
+    function writeFile(name: string, content = 'x'): string {
+      const p = path.join(tmpDir, name);
+      fs.writeFileSync(p, content);
+      return p;
+    }
+
+    it('gives every archive a unique path even with the same archiveName', async () => {
+      // archiveName defaults to the project name, so two sends for one project
+      // collided: the second overwrote the first while it was being attached.
+      const file = writeFile('a.txt');
+
+      const [first, second] = await Promise.all([
+        createZipArchive([file], 'SameProject'),
+        createZipArchive([file], 'SameProject'),
+      ]);
+
+      expect(first.zipPath).not.toBe(second.zipPath);
+      expect(fs.existsSync(first.zipPath)).toBe(true);
+      expect(fs.existsSync(second.zipPath)).toBe(true);
+
+      // The recipient still sees the friendly name.
+      expect(first.filename).toBe('SameProject.zip');
+      expect(second.filename).toBe('SameProject.zip');
+
+      cleanupArchive(first.zipPath);
+      cleanupArchive(second.zipPath);
+    });
+
+    it('reports paths it could not read instead of dropping them silently', async () => {
+      const good = writeFile('good.txt');
+      const missing = path.join(tmpDir, 'missing.txt');
+
+      const result = await createZipArchive([good, missing], 'partial');
+
+      expect(result.fileCount).toBe(1);
+      expect(result.skipped).toEqual([missing]);
+
+      cleanupArchive(result.zipPath);
+    });
+
+    it('names the unreadable paths when nothing can be archived', async () => {
+      const missing = path.join(tmpDir, 'nope.txt');
+
+      await expect(createZipArchive([missing], 'x')).rejects.toThrow('nope.txt');
     });
   });
 });

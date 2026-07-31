@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import * as path from 'path';
 import type { ZipArchive as ZipArchiveCtor } from 'archiver';
 import { getInstanceTempDir } from '../utils/temp-dirs';
@@ -19,29 +20,49 @@ function loadZipArchive(): typeof ZipArchiveCtor {
 }
 
 export interface ArchiveResult {
+  /** Unique path on disk. */
   zipPath: string;
+  /** Friendly name the recipient sees — may repeat across sends. */
   filename: string;
   fileCount: number;
   totalSize: number;
+  /** Paths that could not be read, so the caller can tell the user. */
+  skipped: string[];
 }
 
 export async function createZipArchive(filePaths: string[], archiveName?: string): Promise<ArchiveResult> {
   const fileStats: { filePath: string; stat: fs.Stats }[] = [];
+  const skipped: string[] = [];
+
   for (const f of filePaths) {
     try {
       const stat = fs.statSync(f);
-      if (stat.isFile()) fileStats.push({ filePath: f, stat });
+
+      if (stat.isFile()) {
+        fileStats.push({ filePath: f, stat });
+      } else {
+        skipped.push(f);
+      }
     } catch {
-      // skip missing files
+      // Silently dropping these meant a user could ask for three files, get two,
+      // and never be told. Report them back instead.
+      skipped.push(f);
     }
   }
+
   if (fileStats.length === 0) {
-    throw new Error('No valid files found to archive');
+    throw new Error(`No valid files found to archive: ${filePaths.join(', ')}`);
   }
 
   const name = archiveName || `claudito-files-${Date.now()}`;
   const filename = name.endsWith('.zip') ? name : `${name}.zip`;
-  const zipPath = path.join(getInstanceTempDir('claudito-archives'), filename);
+
+  // The on-disk name must be unique even though the name shown to the recipient
+  // is not: archiveName defaults to the project name, so two sends for the same
+  // project would land on the same path — the second overwriting the first while
+  // the first is still being attached, and the first's cleanup deleting it.
+  const unique = `${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const zipPath = path.join(getInstanceTempDir('claudito-archives'), `${unique}-${filename}`);
 
   const ZipArchive = loadZipArchive();
   const output = fs.createWriteStream(zipPath);
@@ -51,7 +72,7 @@ export async function createZipArchive(filePaths: string[], archiveName?: string
     let totalSize = 0;
 
     output.on('close', () => {
-      resolve({ zipPath, filename, fileCount: fileStats.length, totalSize });
+      resolve({ zipPath, filename, fileCount: fileStats.length, totalSize, skipped });
     });
 
     archive.on('error', reject);
@@ -80,16 +101,33 @@ export function needsSplit(filePath: string): boolean {
   return fs.existsSync(filePath) && fs.statSync(filePath).size > MAX_ATTACHMENT_SIZE;
 }
 
-export async function splitArchive(archivePath: string, chunkSize = MAX_ATTACHMENT_SIZE): Promise<SplitResult> {
+export interface SplitOptions {
+  /**
+   * Delete the source after splitting. Correct for a temp archive we created,
+   * but NOT when the caller handed us a file the user owns — that would destroy
+   * it just because they asked to email it.
+   */
+  deleteSource?: boolean;
+  /** Where the parts go. Defaults to the source's directory. */
+  outputDir?: string;
+}
+
+export async function splitArchive(
+  archivePath: string,
+  chunkSize = MAX_ATTACHMENT_SIZE,
+  options: SplitOptions = {},
+): Promise<SplitResult> {
+  const { deleteSource = true, outputDir } = options;
   const fileSize = fs.statSync(archivePath).size;
   const totalParts = Math.ceil(fileSize / chunkSize);
   const parts: string[] = [];
+  const partBase = outputDir ? path.join(outputDir, path.basename(archivePath)) : archivePath;
 
   try {
     for (let i = 0; i < totalParts; i++) {
       const start = i * chunkSize;
       const end = Math.min(start + chunkSize, fileSize);
-      const partPath = `${archivePath}.${String(i + 1).padStart(3, '0')}`;
+      const partPath = `${partBase}.${String(i + 1).padStart(3, '0')}`;
 
       await new Promise<void>((resolve, reject) => {
         const readStream = fs.createReadStream(archivePath, { start, end: end - 1 });
@@ -109,7 +147,10 @@ export async function splitArchive(archivePath: string, chunkSize = MAX_ATTACHME
     throw err;
   }
 
-  fs.unlinkSync(archivePath);
+  if (deleteSource) {
+    fs.unlinkSync(archivePath);
+  }
+
   return { parts, totalParts, originalSize: fileSize };
 }
 

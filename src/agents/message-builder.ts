@@ -1,5 +1,6 @@
 import { AgentMessage, AgentMode } from './agent';
 import { McpServerConfig } from '../repositories/settings';
+import { randomBytes } from 'crypto';
 import { getLogger } from '../utils/logger';
 import { getInstanceTempDir } from '../utils/temp-dirs';
 import * as fs from 'fs';
@@ -220,7 +221,11 @@ export class MessageBuilder {
     }
 
     const tempDir = getInstanceTempDir('claudito-mcp');
-    const configFileName = `mcp-${projectId}.json`;
+    // Unique per invocation. The directory already separates instances, but two
+    // agents started for the same project inside one instance would otherwise
+    // share this file — and whichever stops first deletes it out from under the
+    // other, which then loses its MCP servers mid-session.
+    const configFileName = `mcp-${projectId}-${Date.now()}-${randomBytes(3).toString('hex')}.json`;
     const configPath = path.join(tempDir, configFileName);
 
     // Write the config file
