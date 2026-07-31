@@ -43,7 +43,7 @@ import { createDockerRouter } from './docker';
 import { DefaultRalphLoopService } from '../services/ralph-loop/ralph-loop-service';
 import { RalphLoopService } from '../services/ralph-loop/types';
 import { FileRalphLoopRepository } from '../repositories/ralph-loop';
-import { getDataDirectory, getLogger, getGlobalLogs } from '../utils';
+import { getDataDirectory, getLogger, getGlobalLogs, getBuildId } from '../utils';
 import { RoadmapGenerator } from '../services';
 import { ProjectWebSocketServer } from '../websocket';
 import { ProjectDiscoveryService, DefaultProjectDiscoveryService } from '../services/project-discovery';
@@ -200,6 +200,10 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
       timestamp: new Date().toISOString(),
       port: Number(process.env.PORT) || 3000,
       authWarning: apiKeyProblem === null ? null : 'UNUSABLE_ANTHROPIC_API_KEY',
+      // Fingerprint of the compiled code this process loaded. Instances that
+      // disagree are running different builds — someone restarted one port and
+      // not the others.
+      buildId: getBuildId(),
     };
 
     // The endpoint has to stay reachable without a cookie (login page + the

@@ -74,3 +74,6 @@ data/
 # 내부 접속 정보(서버 PC명/사내 IP/Tailscale 주소/계정)를 담고 있다.
 # origin 은 공개 저장소이므로 절대 커밋하지 않는다.
 docs/claudito-접속-가이드.md
+
+# 자동 롤백용 known-good 빌드 스냅샷
+.lkg/

@@ -87,6 +87,36 @@ function Test-AuthWarning {
     }
 }
 
+# 세 인스턴스는 같은 dist/index.js 를 실행하지만, Node 는 시작 시점의 코드를 메모리에
+# 들고 있다. 한 포트만 재시작하면 나머지는 조용히 이전 빌드로 계속 돈다.
+# 파일 시각 비교는 오탐이 많아(빌드는 내용이 같아도 모든 파일을 다시 쓴다) 인스턴스가
+# 보고하는 코드 지문끼리 비교한다.
+function Test-BuildDrift {
+    param([Parameter(Mandatory)][string[]]$Ports)
+
+    $seen = @{}
+
+    foreach ($port in $Ports) {
+        try {
+            $h = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 8
+
+            if ($h.buildId) {
+                $seen[$port] = $h.buildId
+            }
+        }
+        catch {
+            # 다운은 위에서 처리한다.
+        }
+    }
+
+    $distinct = @($seen.Values | Sort-Object -Unique)
+
+    if ($distinct.Count -gt 1) {
+        $detail = ($seen.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+        Write-Log "빌드 불일치 — 포트마다 다른 코드가 돈다 ($detail). 'npm run instances:restart' 로 전체를 맞춰라." 'ERROR'
+    }
+}
+
 # PM2 로그는 무제한으로 커진다 (단일 인스턴스 시절 claudito-err.log 가 5MB 까지
 # 자랐고, 이제 인스턴스가 3개다). PM2 가 파일 핸들을 잡고 있어 Windows 에서는
 # rename 이 실패할 수 있으므로, 꼬리만 보관하고 `pm2 flush` 로 PM2 가 직접 비우게 한다.
@@ -172,7 +202,12 @@ if (-not $CheckOnly) {
 $down = @($ports | Where-Object { -not (Test-Instance $_) })
 
 if ($down.Count -eq 0) {
+    # 정상으로 돌아왔으면 연속 실패 카운터를 지운다. 남겨두면 나중에 한 번만
+    # 실패해도 곧바로 롤백이 돌아버린다.
+    Remove-Item (Join-Path $logDir 'watchdog-failures.txt') -Force -ErrorAction SilentlyContinue
+
     Test-AuthWarning -Ports $ports
+    Test-BuildDrift -Ports $ports
     Write-Log "정상 — 포트 $($ports -join ', ') 전부 응답"
     exit 0
 }
@@ -232,5 +267,58 @@ if ($stillDown.Count -eq 0) {
     exit 0
 }
 
-Write-Log "복구 실패 — 포트 $($stillDown -join ', ') 여전히 다운. logs\claudito-<port>-err.log 확인 필요" 'ERROR'
+Write-Log "복구 실패 — 포트 $($stillDown -join ', ') 여전히 다운" 'ERROR'
+
+# 재시작으로 살아나지 않는다는 것은 대개 dist 가 깨졌다는 뜻이다. 재부팅 후
+# PM2 가 깨진 빌드를 그대로 띄우면 restart-safe 를 거치지 않으므로 롤백도 일어나지
+# 않고, 원격에서는 손쓸 방법이 없어 사무실 방문으로 이어진다.
+# 연속 실패가 쌓였을 때만 마지막 수단으로 known-good 으로 되돌린다.
+$statePath = Join-Path $logDir 'watchdog-failures.txt'
+$fails = 0
+
+if (Test-Path $statePath) {
+    $raw = (Get-Content $statePath -Raw).Trim()
+    if ($raw -match '^\d+$') { $fails = [int]$raw }
+}
+
+$fails++
+Set-Content -Path $statePath -Value $fails -Encoding UTF8
+
+$lkg = Join-Path $repoRoot '.lkg\dist'
+$dist = Join-Path $repoRoot 'dist'
+
+if ($fails -lt 2) {
+    Write-Log "연속 실패 $fails 회 — 다음 주기에 롤백을 시도한다" 'WARN'
+    exit 1
+}
+
+if (-not (Test-Path $lkg)) {
+    Write-Log 'known-good 스냅샷이 없어 롤백 불가 — 수동 조치 필요' 'ERROR'
+    exit 1
+}
+
+Write-Log "연속 실패 $fails 회 — known-good 빌드로 롤백 시도" 'WARN'
+
+try {
+    if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+    Copy-Item $lkg $dist -Recurse -Force
+    Write-Log 'dist 를 known-good 으로 되돌림'
+}
+catch {
+    Write-Log "롤백 실패: $_" 'ERROR'
+    exit 1
+}
+
+& pm2.cmd restart all --update-env 2>&1 | ForEach-Object { Write-Log "  $_" }
+Start-Sleep -Seconds 12
+
+$afterRollback = @($ports | Where-Object { -not (Test-Instance $_) })
+
+if ($afterRollback.Count -eq 0) {
+    Write-Log '롤백으로 복구 완료 — 최근 빌드에 문제가 있다. 원인을 고친 뒤 재배포하라.'
+    Remove-Item $statePath -Force -ErrorAction SilentlyContinue
+    exit 0
+}
+
+Write-Log "롤백 후에도 :$($afterRollback -join ', ') 다운 — 코드 문제가 아니다. logs\claudito-<port>-err.log 확인" 'ERROR'
 exit 1

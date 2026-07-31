@@ -315,3 +315,31 @@ agent writes it into **that instance's** `settings.json`. Settings are per
 | Zip paths are unique, filenames are not | `archiveName` defaults to the project name, so two sends for one project collided — the second overwrote the first mid-attach, and the first's cleanup deleted it. The recipient still sees the friendly name. |
 | Unreadable paths are reported, never dropped | A user asking for three files got two with no indication. `createZipArchive` returns `skipped` and the tool response warns. |
 | MCP config filenames are unique per invocation | Two agents on one project shared the file; the first to stop unlinked it and the other lost its MCP servers mid-session. |
+
+### Restarting is safe by construction — keep it that way
+
+The server is only reachable remotely, so a failed restart means someone has to
+travel to the office. Three layers, each verified by deliberately breaking the
+build (2026-07-31):
+
+1. **Validation gate refuses to restart broken code.** `npm run instances:restart`
+   builds, checks frontend syntax/refs, and boots the compiled server on a spare
+   port. On failure it exits without touching the running instances.
+2. **Auto-rollback if the restart still fails.** `restart-safe.ps1` restores
+   `.lkg/dist` and restarts again. Exit code `2` means "rolled back — your new
+   code is the problem".
+3. **The watchdog rolls back too.** A reboot into a broken `dist` never reaches
+   `restart-safe`, so after two consecutive failed recovery cycles the watchdog
+   restores `.lkg/dist` itself. At a 2-minute interval that is ~4 minutes to
+   self-heal.
+
+**The known-good snapshot must only ever be taken after a restart proved healthy.**
+Snapshotting *before* the restart looks equivalent and is not: a previous failed
+gate run already overwrote `dist` via `npm run build`, while the running
+instances kept answering from the code in memory. The health check said "fine"
+and a broken `dist` was saved as known-good — the rollback then restored the
+broken build and took all three ports down. Process health is not disk health.
+
+**Never run destructive tests against the live ports.** Verifying these paths
+means real downtime for three remote users. Announce it first, or exercise the
+failure on a scratch port.
