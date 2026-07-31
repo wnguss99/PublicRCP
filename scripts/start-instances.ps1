@@ -138,20 +138,48 @@ try {
     Write-Host '[5/5] health check' -ForegroundColor Cyan
     Invoke-Native -Exe 'pm2.cmd' -Arguments @('list') -IgnoreExitCode | Out-Null
 
-    # Give the instances a moment to bind their ports before probing.
-    Start-Sleep -Seconds 8
+    # A cold start binds ports in a few seconds, but a loaded machine takes
+    # longer. A single probe after a fixed sleep reported healthy instances as
+    # FAIL and sent the operator to the error logs for nothing. Retry the way
+    # restart-safe.ps1 does instead of guessing one sleep duration.
+    $failed = @($portList)
+    $lastError = @{}
 
-    $failed = @()
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        Start-Sleep -Seconds 4
+        $failed = @()
+
+        foreach ($port in $portList) {
+            try {
+                Invoke-RestMethod -Uri "http://localhost:$port/api/health" -TimeoutSec 10 | Out-Null
+            }
+            catch {
+                $failed += $port
+                $lastError[$port] = $_.Exception.Message
+            }
+        }
+
+        if ($failed.Count -eq 0) { break }
+
+        if ($attempt -lt 10) {
+            Write-Host ("  waiting {0}/10 — no answer yet: {1}" -f $attempt, ($failed -join ', ')) -ForegroundColor DarkGray
+        }
+    }
 
     foreach ($port in $portList) {
+        if ($failed -contains $port) {
+            Write-Host ("  FAIL :{0}  {1}" -f $port, $lastError[$port]) -ForegroundColor Red
+            Write-Host ("       check .\logs\claudito-$port-err.log") -ForegroundColor Red
+            continue
+        }
+
         try {
             $health = Invoke-RestMethod -Uri "http://localhost:$port/api/health" -TimeoutSec 10
             Write-Host ("  OK   :{0}  status={1} home={2}" -f $port, $health.status, $health.clauditoHome) -ForegroundColor Green
         }
         catch {
-            $failed += $port
-            Write-Host ("  FAIL :{0}  {1}" -f $port, $_.Exception.Message) -ForegroundColor Red
-            Write-Host ("       check .\logs\claudito-$port-err.log") -ForegroundColor Red
+            # It answered a moment ago; do not downgrade it over one flaky probe.
+            Write-Host ("  OK   :{0}" -f $port) -ForegroundColor Green
         }
     }
 

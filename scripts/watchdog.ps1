@@ -43,6 +43,47 @@ function Write-Log {
     Add-Content -Path $logPath -Value $line -Encoding UTF8
 }
 
+# restart-safe.ps1 의 같은 이름 함수와 의도적으로 중복이다. 워치독은 스케줄
+# 작업으로 도는 최후의 방어선이라, 공용 include 파일이 사라지거나 경로가 바뀌면
+# 감시 자체가 멈춘다. 그 위험을 지는 대신 15줄을 복제한다.
+function Copy-DirectorySafely {
+    param([string]$Source, [string]$Destination)
+
+    $staging = "$Destination.staging"
+    $old = "$Destination.old"
+    $leaf = Split-Path $Destination -Leaf
+
+    if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+    if (Test-Path $old) { Remove-Item $old -Recurse -Force }
+
+    $parent = Split-Path $Destination -Parent
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    Copy-Item $Source $staging -Recurse -Force
+
+    $movedAside = $false
+
+    try {
+        if (Test-Path $Destination) {
+            Rename-Item -Path $Destination -NewName "$leaf.old"
+            $movedAside = $true
+        }
+
+        Rename-Item -Path $staging -NewName $leaf
+    }
+    catch {
+        if ($movedAside -and -not (Test-Path $Destination)) {
+            Rename-Item -Path $old -NewName $leaf -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    if (Test-Path $old) { Remove-Item $old -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 function Get-InstancePorts {
     $ErrorActionPreference = 'Continue'
     $raw = & node -e "const c=require('$($configPath -replace '\\', '/')');console.log(c.apps.map(a=>a.env.PORT).join(' '))" 2>&1
@@ -189,6 +230,18 @@ if (-not (Test-Path $configPath)) {
 
 Set-Location $repoRoot
 
+# PM2 데몬은 관리자 권한으로 \\.\pipe\rpc.sock 을 소유한다. 일반 권한으로 이
+# 스크립트가 돌면 모든 pm2 호출이 EPERM 으로 죽는데, 그 실패가 조용해서 워치독이
+# "감시하고 있다" 는 착각만 남긴다. 2026-07-30 사고가 정확히 그 모습이었다.
+# 스케줄 작업이 RunLevel=Highest 로 등록돼 있으면 여기를 통과한다.
+$isElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isElevated -and -not $CheckOnly) {
+    Write-Log '관리자 권한 없이 실행됨 — pm2 조작이 전부 실패한다. 스케줄 작업의 RunLevel=Highest 를 확인하라 (npm run guards:install).' 'ERROR'
+    exit 1
+}
+
 $ports = Get-InstancePorts
 
 if ($ports.Count -eq 0) {
@@ -258,9 +311,21 @@ foreach ($port in $down) {
 
 & pm2.cmd save 2>&1 | ForEach-Object { Write-Log "  $_" }
 
-Start-Sleep -Seconds 10
+# 기동에는 수 초가 걸린다. 한 번 찔러보고 실패로 단정하면, 정상적으로 살아나는
+# 중인 인스턴스를 실패로 세어 연속 실패 카운터가 쌓이고 결국 불필요한 롤백까지
+# 간다. restart-safe.ps1 의 Wait-Healthy 와 같은 재시도 방식으로 맞춘다.
+$stillDown = @($recovered)
 
-$stillDown = @($recovered | Where-Object { -not (Test-Instance $_) })
+for ($retry = 1; $retry -le 8; $retry++) {
+    Start-Sleep -Seconds 4
+    $stillDown = @($recovered | Where-Object { -not (Test-Instance $_) })
+
+    if ($stillDown.Count -eq 0) { break }
+
+    if ($retry -lt 8) {
+        Write-Log "  헬스체크 재시도 $retry/8 — 미응답: $($stillDown -join ', ')"
+    }
+}
 
 if ($stillDown.Count -eq 0) {
     Write-Log "복구 완료 — 포트 $($recovered -join ', ')"
@@ -300,8 +365,7 @@ if (-not (Test-Path $lkg)) {
 Write-Log "연속 실패 $fails 회 — known-good 빌드로 롤백 시도" 'WARN'
 
 try {
-    if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-    Copy-Item $lkg $dist -Recurse -Force
+    Copy-DirectorySafely -Source $lkg -Destination $dist
     Write-Log 'dist 를 known-good 으로 되돌림'
 }
 catch {
@@ -309,7 +373,18 @@ catch {
     exit 1
 }
 
-& pm2.cmd restart all --update-env 2>&1 | ForEach-Object { Write-Log "  $_" }
+# dist 를 갈아끼웠으므로 정상 포트도 메모리의 깨진 코드를 들고 있다 — 전부 재시작한다.
+# `restart all` 대신 포트별로 도는 이유는, 하나가 실패해도 나머지는 올려야 하고
+# 로그에 어느 포트가 문제였는지 남겨야 하기 때문이다.
+foreach ($port in $ports) {
+    Write-Log "롤백 후 restart claudito-$port"
+    & pm2.cmd restart "claudito-$port" --update-env 2>&1 | ForEach-Object { Write-Log "  $_" }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "  롤백 재시작 claudito-$port 실패 (exit $LASTEXITCODE)" 'ERROR'
+    }
+}
+
 Start-Sleep -Seconds 12
 
 $afterRollback = @($ports | Where-Object { -not (Test-Instance $_) })

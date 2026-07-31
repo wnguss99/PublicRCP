@@ -1,8 +1,11 @@
+import fs from 'fs';
+import path from 'path';
 import {
   createAuthService,
   AuthService,
   DefaultAuthService,
 } from '../../../src/services/auth-service';
+import { getDataDirectory } from '../../../src/utils/paths';
 
 describe('AuthService', () => {
   let authService: AuthService;
@@ -292,6 +295,75 @@ describe('AuthService', () => {
       const session = service.createSession();
 
       expect(service.validateSession(session.id)).toBe(true);
+    });
+  });
+
+  describe('Corrupt sessions.json', () => {
+    // These go through createAuthService() rather than a memory store because
+    // the recovery lives in the real file store. CLAUDITO_HOME is redirected
+    // per Jest worker by test/env-setup.ts, so this never touches live data.
+    const sessionsPath = (): string => path.join(getDataDirectory(), 'sessions.json');
+
+    function removeIfPresent(file: string): void {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+      }
+    }
+
+    beforeEach(() => {
+      // Without fixed credentials every createAuthService() invents new ones,
+      // and the fingerprint mismatch alone would drop the sessions — which
+      // would hide whether the corrupt-file handling did its job.
+      process.env.CLAUDITO_USERNAME = 'corrupt-case-user';
+      process.env.CLAUDITO_PASSWORD = 'corrupt-case-pass-123';
+
+      removeIfPresent(sessionsPath());
+      removeIfPresent(`${sessionsPath()}.corrupt`);
+    });
+
+    afterEach(() => {
+      removeIfPresent(sessionsPath());
+      removeIfPresent(`${sessionsPath()}.corrupt`);
+    });
+
+    it('should start with an empty session map instead of throwing', () => {
+      fs.writeFileSync(sessionsPath(), '{ truncated', 'utf-8');
+
+      const service = createAuthService();
+
+      expect(service.validateSession('anything')).toBe(false);
+      expect(service.createSession().id).toBeTruthy();
+    });
+
+    it('should preserve the unreadable file as .corrupt', () => {
+      fs.writeFileSync(sessionsPath(), '{ truncated', 'utf-8');
+
+      createAuthService();
+
+      // Dropping it silently would erase the only evidence of why every user
+      // of this instance was logged out.
+      expect(fs.existsSync(`${sessionsPath()}.corrupt`)).toBe(true);
+      expect(fs.readFileSync(`${sessionsPath()}.corrupt`, 'utf-8')).toBe('{ truncated');
+    });
+
+    it('should not leave the corrupt file where the next save would overwrite it', () => {
+      fs.writeFileSync(sessionsPath(), '{ truncated', 'utf-8');
+
+      const service = createAuthService();
+      service.createSession();
+
+      const persisted = fs.readFileSync(sessionsPath(), 'utf-8');
+      expect(() => JSON.parse(persisted)).not.toThrow();
+    });
+
+    it('should leave a valid file alone', () => {
+      const service = createAuthService();
+      const session = service.createSession();
+
+      const afterRestart = createAuthService();
+
+      expect(afterRestart.validateSession(session.id)).toBe(true);
+      expect(fs.existsSync(`${sessionsPath()}.corrupt`)).toBe(false);
     });
   });
 

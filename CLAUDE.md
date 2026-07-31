@@ -343,3 +343,17 @@ broken build and took all three ports down. Process health is not disk health.
 **Never run destructive tests against the live ports.** Verifying these paths
 means real downtime for three remote users. Announce it first, or exercise the
 failure on a scratch port.
+
+### Invariants added while hardening the restart path (2026-08-01)
+
+| Rule | What it prevents |
+|---|---|
+| **`dist` and `.lkg/dist` are swapped, never deleted-then-copied.** `Copy-DirectorySafely` copies to `.staging`, renames the target to `.old`, renames `.staging` into place, then drops `.old`. On failure it renames `.old` back. | `Remove-Item dist; Copy-Item .lkg\dist dist` left a multi-second window with **no** usable `dist`. Dying there — in code that only runs during an outage — meant no instance could boot and no remote fix was possible. |
+| **The function is deliberately duplicated in `restart-safe.ps1` and `watchdog.ps1`.** | A shared include is one moved file away from disabling the watchdog, which is the last line of defence. Keep the two copies identical if either changes. |
+| **`pm2` exit codes are checked, never `\| Out-Null`.** | A pm2 that did nothing (EPERM) still looked like a success, because the health check passed against the *old* process still holding the port. |
+| **The watchdog refuses to run unelevated** unless `-CheckOnly`. | Without it every pm2 call failed silently and the watchdog only produced the illusion of monitoring — exactly the 2026-07-30 failure. The guard sits ahead of log rotation and every pm2 call. |
+| **Health checks retry; they never probe once after a fixed sleep.** | `start-instances.ps1` and the watchdog's post-restart check reported healthy-but-slow instances as FAIL. In the watchdog that inflated the consecutive-failure counter and could trigger a rollback nothing was wrong with. |
+| **Rollback restarts each port by name, not `pm2 restart all`.** | `all` is all-or-nothing and hides which port failed. After a `dist` swap every port must restart — healthy ones are still serving the broken build from memory. |
+| **The boot smoke test asks the OS for a free port.** | Hardcoded 4099 turned an unrelated port collision into "the new code does not boot", blocking deploys during no actual fault. |
+| **Shutdown has a 15 s `unref()`ed force-exit timer** (`src/index.ts`). | A wedged Claude CLI made `stopAllAgents()` hang forever, so the old process kept the port and the restart failed with `EADDRINUSE`. PM2 SIGKILLs on its own; a manual or dev run had no backstop. `unref()` is required — without it every clean exit would wait 15 s. |
+| **A corrupt `sessions.json` is renamed to `.corrupt`,** matching `settings.json` and `projects/index.json`. | The file used to be dropped silently, destroying the only evidence of why an instance logged everyone out.

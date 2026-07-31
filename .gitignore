@@ -77,3 +77,7 @@ docs/claudito-접속-가이드.md
 
 # 자동 롤백용 known-good 빌드 스냅샷
 .lkg/
+
+# dist 를 안전하게 갈아끼우는 도중의 중간 디렉터리 (롤백이 죽어도 남을 수 있다)
+dist.staging/
+dist.old/

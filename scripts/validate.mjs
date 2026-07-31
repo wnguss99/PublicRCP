@@ -36,6 +36,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_JS = join(ROOT, 'public', 'js');
@@ -402,9 +403,23 @@ function get(url, timeoutMs) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 예전에는 4099 로 고정이었다. 그 포트를 다른 것이 쓰고 있으면 스모크가 EADDRINUSE
+// 로 실패하고, 게이트는 그것을 "새 코드가 안 뜬다" 로 보고해 재시작을 막는다.
+// 장애도 아닌데 배포가 멈추는 셈이라 OS 에게 빈 포트를 받아 쓴다.
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 async function serverSmoke() {
   head('4. 서버 부팅 스모크 (임시 포트 GET /login 200)');
-  const PORT = 4099;
+  const PORT = await findFreePort();
   const child = spawn(process.execPath, ['-r', 'dotenv/config', 'dist/index.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', NODE_ENV: 'production' },

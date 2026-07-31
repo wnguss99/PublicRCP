@@ -164,13 +164,13 @@ try {
         return
     }
 
-    Write-Host '[1/3] git hooks 경로 활성화' -ForegroundColor Cyan
+    Write-Host '[1/4] git hooks 경로 활성화' -ForegroundColor Cyan
     $ErrorActionPreference = 'Continue'
     & git config --local core.hooksPath .githooks
     $hooksPath = (& git config --local core.hooksPath)
     Write-Host "    core.hooksPath = $hooksPath" -ForegroundColor Green
 
-    Write-Host "[2/3] '$taskName' 스케줄 작업 등록 ($IntervalMinutes 분 간격)" -ForegroundColor Cyan
+    Write-Host "[2/4] '$taskName' 스케줄 작업 등록 ($IntervalMinutes 분 간격)" -ForegroundColor Cyan
 
     if (-not (Test-Path $watchdogPath)) {
         throw "watchdog.ps1 이 없다: $watchdogPath"

@@ -82,6 +82,57 @@ function Wait-Healthy {
     return $bad
 }
 
+# 디렉터리를 "항상 최소 하나의 온전한 사본이 남는" 방식으로 교체한다.
+#
+# 원래는 `Remove-Item 대상; Copy-Item 원본 대상` 이었다. 그 사이(수 초, dist 는
+# 수백 개 파일)에 프로세스가 죽거나 정전이 나면 대상도 원본 사본도 없다. 롤백
+# 경로에서 이 일이 나면 dist 가 사라져 어느 인스턴스도 뜨지 못하고, 원격에서는
+# 손쓸 방법이 없어 사무실 방문으로 이어진다. 롤백은 이미 장애 상황에서 도는
+# 코드이므로 그 자체가 복구 불가 상태를 만들어서는 안 된다.
+#
+# 대신 staging 으로 먼저 복사한 뒤 rename 으로 갈아끼운다. rename 은 같은 볼륨
+# 안에서 메타데이터만 바꾸므로 사실상 원자적이고, 실패해도 .old 를 되돌릴 수 있다.
+function Copy-DirectorySafely {
+    param([string]$Source, [string]$Destination)
+
+    $staging = "$Destination.staging"
+    $old = "$Destination.old"
+    $leaf = Split-Path $Destination -Leaf
+
+    if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+    if (Test-Path $old) { Remove-Item $old -Recurse -Force }
+
+    $parent = Split-Path $Destination -Parent
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    # 여기서 실패해도 대상은 아직 그대로다.
+    Copy-Item $Source $staging -Recurse -Force
+
+    $movedAside = $false
+
+    try {
+        if (Test-Path $Destination) {
+            Rename-Item -Path $Destination -NewName "$leaf.old"
+            $movedAside = $true
+        }
+
+        Rename-Item -Path $staging -NewName $leaf
+    }
+    catch {
+        # 갈아끼우다 실패했으면 원래 대상을 되살린다. 반쪽짜리 상태로 두지 않는다.
+        if ($movedAside -and -not (Test-Path $Destination)) {
+            Rename-Item -Path $old -NewName $leaf -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    # 여기까지 왔으면 대상은 온전하다. 뒷정리 실패는 무해하다.
+    if (Test-Path $old) { Remove-Item $old -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 # known-good 스냅샷은 반드시 "재시작해서 실제로 떠 있는 것을 확인한 dist" 여야 한다.
 #
 # 처음에는 재시작 *전* 에 찍었는데, 그러면 이런 함정에 빠진다: 직전 실행에서 검증
@@ -93,10 +144,7 @@ function Wait-Healthy {
 # 프로세스가 건강한 것과 디스크의 dist 가 정상인 것은 별개다.
 function Save-KnownGood {
     try {
-        $parent = Split-Path $lkgPath -Parent
-        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        if (Test-Path $lkgPath) { Remove-Item $lkgPath -Recurse -Force }
-        Copy-Item $distPath $lkgPath -Recurse -Force
+        Copy-DirectorySafely -Source $distPath -Destination $lkgPath
         Write-Host "   known-good 갱신: $lkgPath" -ForegroundColor DarkGray
     }
     catch {
@@ -111,8 +159,7 @@ function Restore-KnownGood {
     }
 
     try {
-        if (Test-Path $distPath) { Remove-Item $distPath -Recurse -Force }
-        Copy-Item $lkgPath $distPath -Recurse -Force
+        Copy-DirectorySafely -Source $lkgPath -Destination $distPath
         Write-Host '   dist 를 known-good 으로 되돌림' -ForegroundColor Yellow
         return $true
     }
@@ -146,8 +193,15 @@ try {
 
     Write-Host ''
     Write-Host "2) 재시작: $($ports -join ', ')" -ForegroundColor Green
+
+    # pm2 의 종료 코드를 버리면 안 된다. 예전에는 Out-Null 로 흘려보내서, pm2 가
+    # EPERM 으로 아무것도 못 했는데도 헬스체크가 "이전 프로세스가 아직 살아있다"
+    # 는 이유로 통과해 재시작이 성공한 것처럼 보였다.
     foreach ($p in $ports) {
-        Invoke-Pm2 @('restart', "claudito-$p", '--update-env') | Out-Null
+        $exit = Invoke-Pm2 @('restart', "claudito-$p", '--update-env')
+        if ($exit -ne 0) {
+            Write-Host "   pm2 restart claudito-$p 실패 (exit $exit)" -ForegroundColor Red
+        }
     }
 
     Write-Host '3) 헬스체크 (최대 30초 대기)' -ForegroundColor Cyan
@@ -185,7 +239,10 @@ try {
     }
 
     foreach ($p in $ports) {
-        Invoke-Pm2 @('restart', "claudito-$p", '--update-env') | Out-Null
+        $exit = Invoke-Pm2 @('restart', "claudito-$p", '--update-env')
+        if ($exit -ne 0) {
+            Write-Host "   롤백 재시작 claudito-$p 실패 (exit $exit)" -ForegroundColor Red
+        }
     }
 
     $stillBad = Wait-Healthy -Ports $ports

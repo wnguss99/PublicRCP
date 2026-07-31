@@ -20,6 +20,18 @@ async function main(): Promise<void> {
     isShuttingDown = true;
 
     logger.info('Shutting down...', { signal });
+
+    // server.stop() waits on stopAllAgents(), which waits on each Claude CLI
+    // process. A wedged CLI made shutdown hang forever, so a restart left the
+    // old process holding the port and the new one failed with EADDRINUSE.
+    // PM2 SIGKILLs after kill_timeout, but a manual or dev run has no such
+    // backstop. unref() so this timer never keeps a healthy exit waiting.
+    const forceExit = setTimeout(() => {
+      logger.error('Graceful shutdown timed out — forcing exit', { signal });
+      process.exit(1);
+    }, 15_000);
+    forceExit.unref();
+
     server
       .stop()
       .then(() => process.exit(0))

@@ -124,6 +124,16 @@ function createFileSessionStore(): SessionStore {
 
         return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as PersistedSessions;
       } catch {
+        // Keep the unreadable file instead of letting the next save overwrite
+        // it, matching settings.json and projects/index.json. Losing sessions
+        // only costs a re-login, but silently destroying the evidence hides
+        // why everyone was logged out.
+        try {
+          fs.renameSync(filePath, `${filePath}.corrupt`);
+        } catch {
+          // Best effort — the re-login happens either way.
+        }
+
         return null;
       }
     },
