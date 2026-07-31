@@ -209,3 +209,66 @@ describe('operation-tracking', () => {
 
   });
 });
+
+// 2026-07-31: 쓰기 한 번이 실패하면 인스턴스 전체가 죽었다. 호출자가 에러를
+// 정상적으로 처리해도, 내부 부기(bookkeeping)용 `.finally()` 파생 프로미스에
+// 핸들러가 없어 unhandled rejection 이 되고 Node 기본 정책이 프로세스를 종료시켰다.
+describe('rejection must never escape the tracker', () => {
+  function captureUnhandled(): { events: unknown[]; restore: () => void } {
+    const events: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      events.push(reason);
+    };
+
+    process.on('unhandledRejection', onUnhandled);
+
+    return {
+      events,
+      restore: () => process.off('unhandledRejection', onUnhandled),
+    };
+  }
+
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it('PendingOperationsTracker.track should not leave an unhandled rejection', async () => {
+    const captured = captureUnhandled();
+    const tracker = new PendingOperationsTracker('crash-test');
+
+    await expect(tracker.track(Promise.reject(new Error('disk full')))).rejects.toThrow('disk full');
+    await settle();
+    captured.restore();
+
+    expect(captured.events).toEqual([]);
+  });
+
+  it('WriteQueueManager.withLock should not leave an unhandled rejection', async () => {
+    const captured = captureUnhandled();
+    const queue = new WriteQueueManager('crash-test');
+
+    await expect(
+      queue.withLock('k', () => Promise.reject(new Error('disk full'))),
+    ).rejects.toThrow('disk full');
+    await settle();
+    captured.restore();
+
+    expect(captured.events).toEqual([]);
+  });
+
+  it('a failed operation must not poison the queue for that key', async () => {
+    const queue = new WriteQueueManager('crash-test');
+
+    await expect(queue.withLock('k', () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+
+    await expect(queue.withLock('k', () => Promise.resolve('ok'))).resolves.toBe('ok');
+  });
+
+  it('flush should drain even when an operation failed', async () => {
+    const tracker = new PendingOperationsTracker('crash-test');
+    const failing = tracker.track(Promise.reject(new Error('disk full')));
+
+    failing.catch(() => { /* caller handles */ });
+
+    await expect(tracker.flush()).resolves.toBeUndefined();
+    expect(tracker.size).toBe(0);
+  });
+});

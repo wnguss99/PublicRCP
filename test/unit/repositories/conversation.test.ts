@@ -860,4 +860,61 @@ describe('FileConversationRepository', () => {
       expect(savedConv.messages).toHaveLength(3);
     });
   });
+
+  // 스트리밍은 stdout/tool_use/tool_result 각각에 대해 addMessage 를 부른다.
+  // 매번 디스크에서 다시 읽으면 대화 전체를 read + JSON.parse 하게 되어,
+  // 1000메시지(4.4MB) 기준 건당 약 24ms 동안 이벤트 루프가 멈췄다(측정치).
+  describe('streaming write path', () => {
+    it('should not re-read the conversation from disk once it is cached', async () => {
+      const id = (await repository.create('test-project', null)).id;
+      await repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'first', timestamp: new Date().toISOString(),
+      });
+
+      mockFileSystem.readFile.mockClear();
+
+      for (let i = 0; i < 5; i++) {
+        await repository.addMessage('test-project', id, {
+          type: 'stdout', content: `chunk ${i}`, timestamp: new Date().toISOString(),
+        });
+      }
+
+      expect(mockFileSystem.readFile).not.toHaveBeenCalled();
+    });
+
+    it('should still persist every message', async () => {
+      const id = (await repository.create('test-project', null)).id;
+
+      for (let i = 0; i < 4; i++) {
+        await repository.addMessage('test-project', id, {
+          type: 'stdout', content: `chunk ${i}`, timestamp: new Date().toISOString(),
+        });
+      }
+
+      const messages = await repository.getMessages('test-project', id);
+      expect(messages.map((m) => m.content)).toEqual(['chunk 0', 'chunk 1', 'chunk 2', 'chunk 3']);
+    });
+
+    it('should drop the cache when a write fails so it cannot diverge from disk', async () => {
+      const id = (await repository.create('test-project', null)).id;
+      await repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'persisted', timestamp: new Date().toISOString(),
+      });
+
+      // mockRejectedValueOnce 는 거부된 프로미스를 즉시 만들어 unhandled rejection 이
+      // 된다. 호출되는 순간에 던지게 한다.
+      mockFileSystem.writeFile.mockImplementationOnce(async () => {
+        throw new Error('disk full');
+      });
+
+      await expect(repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'lost', timestamp: new Date().toISOString(),
+      })).rejects.toThrow('disk full');
+
+      // Cache was dropped, so this re-reads from disk and must not show the
+      // message that failed to persist.
+      const messages = await repository.getMessages('test-project', id);
+      expect(messages.map((m) => m.content)).toEqual(['persisted']);
+    });
+  });
 });

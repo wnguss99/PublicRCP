@@ -18,12 +18,26 @@ export class PendingOperationsTracker {
    */
   track<T>(promise: Promise<T>): Promise<T> {
     this.pendingOperations.add(promise);
-    void promise.finally(() => {
-      this.pendingOperations.delete(promise);
-      logger.debug(`${this.name}: Operation completed`, {
-        remaining: this.pendingOperations.size,
+
+    // `.finally()` returns a *new* promise that inherits the rejection. Throwing
+    // it away with `void` left that derived promise unhandled, so one failed
+    // conversation write became an unhandled rejection — which terminates the
+    // process under Node's default policy. A transient disk error would take the
+    // whole instance down.
+    //
+    // The caller still receives the original promise and remains responsible for
+    // its rejection; this catch only silences the bookkeeping copy.
+    promise
+      .finally(() => {
+        this.pendingOperations.delete(promise);
+        logger.debug(`${this.name}: Operation completed`, {
+          remaining: this.pendingOperations.size,
+        });
+      })
+      .catch(() => {
+        // Owned by the caller of track().
       });
-    });
+
     return promise;
   }
 
@@ -42,8 +56,15 @@ export class PendingOperationsTracker {
       logger.debug(`${this.name}: Flushing operations`, {
         count: this.pendingOperations.size,
       });
-      await Promise.all(Array.from(this.pendingOperations));
+
+      // allSettled, not all: flush means "wait until the queue drains". With
+      // Promise.all a single failed write threw out of the loop, leaving the
+      // remaining operations untracked — and shutdown paths that flush before
+      // exiting would fail instead of draining. Individual failures are already
+      // reported to whoever called track().
+      await Promise.allSettled(Array.from(this.pendingOperations));
     }
+
     logger.debug(`${this.name}: All operations flushed`);
   }
 
@@ -77,18 +98,26 @@ export class WriteQueueManager<K = string> {
 
     const newOperation = previousOperation.then(operation, operation);
 
-    // Store void promise to avoid memory leaks
-    this.writeQueues.set(
-      key,
-      newOperation.then(
-        () => {},
-        () => {}
-      )
+    // What the next caller queues behind. Deliberately never rejects, so one
+    // failed operation cannot poison the queue for that key.
+    const settled = newOperation.then(
+      () => {},
+      () => {}
     );
 
-    // Clean up after operation
-    void newOperation.finally(() => {
-      if (this.writeQueues.get(key) === newOperation) {
+    this.writeQueues.set(key, settled);
+
+    // Clean up once this is the last operation for the key, otherwise the map
+    // keeps one entry per conversation for the life of the process.
+    //
+    // This compared against `newOperation` before, but what was stored is
+    // `settled` — a different promise — so the condition was always false and the
+    // entry was never removed. Waiting on `settled` also matters because
+    // `newOperation.finally()` returns a promise that inherits the rejection, and
+    // discarding it with `void` made a failed write an unhandled rejection, which
+    // terminates the process under Node's default policy.
+    void settled.finally(() => {
+      if (this.writeQueues.get(key) === settled) {
         this.writeQueues.delete(key);
       }
     });
