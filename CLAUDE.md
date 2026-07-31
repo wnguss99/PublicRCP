@@ -290,3 +290,28 @@ preserves it:
 
 Keep new state files consistent with this: atomic write, and on a parse failure
 preserve the original rather than overwriting it.
+
+### Email is configured in conversation, per instance
+
+`claudito-email` MCP serves three tools — `send_email`, `get_email_settings`,
+`update_email_settings` — so a user can just say "보내는 주소를 …로 바꿔줘" and the
+agent writes it into **that instance's** `settings.json`. Settings are per
+`CLAUDITO_HOME`, so one port's user can never see or change another's.
+
+- `EMAIL_MCP_TOOL_NAMES` is the single source for `--allowedTools`. A tool that is
+  served but not allow-listed is silently unusable, so add new tools there.
+- Email switches on automatically once smtpHost + smtpUser + smtpPassword +
+  fromAddress are all present; that is what makes the mail icon appear. The
+  browser caches settings, so the response tells the user to refresh.
+- `get_email_settings` never returns the password, only whether one is stored.
+- There is no mail *receiving*. `defaultRecipient` is the default `To:`.
+
+### Attachment invariants
+
+| Rule | Why |
+|---|---|
+| `splitArchive` must not delete a source it does not own | A user emailing their own 30 MB `.zip` had the file split **and deleted**. Callers pass `deleteSource: false` + `outputDir` for user-owned files. |
+| Parts of a user-owned archive go to the instance temp dir | Otherwise `.001/.002` files litter the user's project folder. |
+| Zip paths are unique, filenames are not | `archiveName` defaults to the project name, so two sends for one project collided — the second overwrote the first mid-attach, and the first's cleanup deleted it. The recipient still sees the friendly name. |
+| Unreadable paths are reported, never dropped | A user asking for three files got two with no indication. `createZipArchive` returns `skipped` and the tool response warns. |
+| MCP config filenames are unique per invocation | Two agents on one project shared the file; the first to stop unlinked it and the other lost its MCP servers mid-session. |
