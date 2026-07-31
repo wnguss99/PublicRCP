@@ -315,6 +315,12 @@ export class DefaultAgentManager implements AgentManager {
   private readonly cliCommandHistory: Map<string, OneOffCommandEntry[]> = new Map();
   private queuedMessages: Map<string, string[]> = new Map();
   private pendingPlans: Map<string, { planContent: string; sessionId: string | null }> = new Map();
+
+  /**
+   * Projects waiting to be restarted after a session-recovery exit.
+   * Keyed by projectId; consumed by handleAgentExit.
+   */
+  private pendingRecoveryRestarts: Map<string, { conversationId: string; isNewSession: boolean }> = new Map();
   private _maxConcurrentAgents: number;
 
   constructor({
@@ -1537,6 +1543,13 @@ export class DefaultAgentManager implements AgentManager {
     this.processTracker.untrackProcess(projectId);
     this.waitingVersions.delete(projectId);
 
+    // A session-recovery exit is expected, not a failure: restart on the
+    // recovered session now that the slot is free.
+    if (this.pendingRecoveryRestarts.has(projectId)) {
+      await this.restartAfterSessionRecovery(projectId);
+      return;
+    }
+
     // Save context usage if available
     const conversationId = agent.sessionId;
     if (conversationId && agent.contextUsage) {
@@ -1690,10 +1703,34 @@ export class DefaultAgentManager implements AgentManager {
       // Small delay to ensure clean shutdown
       await this.delay(500);
 
-      // Start a new session with acceptEdits mode and the plan as the first message
+      // Resume the session the plan was made in, rather than starting a fresh
+      // one. `--permission-mode` is a spawn argument, so switching to
+      // acceptEdits does require a restart — but a *new* session threw away the
+      // conversation that produced the plan, and it also created a session that
+      // never existed as far as the CLI was concerned:
+      //
+      //   1. ExitPlanMode arrives with an empty `input` on current CLI versions
+      //      (it used to carry `plan`/`planFilePath`), so planContent was ''
+      //   2. '' meant no initial message, so nothing was ever written to the
+      //      new session id and the CLI wrote no transcript for it
+      //   3. claudito still stored that id as the project's conversation, so the
+      //      next message resumed a session the CLI had never heard of and the
+      //      process died with "No conversation found" → exit code 1
+      //
+      // Resuming keeps the plan in context and guarantees the session exists.
+      // The message is never empty for the same reason.
+      const resuming = Boolean(pendingPlan.sessionId);
+
+      // When resuming, the plan is already in the transcript, so repeating it
+      // verbatim would just duplicate it. Only a fresh session needs the text.
+      const approvalMessage = resuming || !pendingPlan.planContent
+        ? 'I approved the plan. Please proceed with implementing it.'
+        : pendingPlan.planContent;
+
       await this.startInteractiveAgent(projectId, {
-        initialMessage: pendingPlan.planContent || undefined,
-        isNewSession: true,
+        initialMessage: approvalMessage,
+        sessionId: pendingPlan.sessionId ?? undefined,
+        isNewSession: resuming === false,
         permissionMode: 'acceptEdits',
       });
 
@@ -1737,11 +1774,64 @@ export class DefaultAgentManager implements AgentManager {
     // Use session manager to handle recovery
     const recovery = await this.sessionManager.handleSessionNotFound(projectId, missingSessionId);
 
-    // Agent will exit, and user will need to restart with new session
-    this.logger.info('Session recovery complete, agent will need restart', {
+    this.logger.info('Session recovery complete, queueing restart on the new session', {
       projectId,
       newConversationId: recovery.conversationId,
     });
+
+    // Recovery used to stop here, which left the dying process to report
+    // "Claude agent exited with code 1" in the chat. The user saw a bare exit
+    // code for a condition claudito had already handled, and had to resend the
+    // message by hand.
+    //
+    // The message that triggered this is gone with the missing session, so say
+    // so rather than pretending the turn survived.
+    this.emit('message', projectId, {
+      type: 'system',
+      content:
+        '[이전 대화 기록을 Claude 에서 찾을 수 없어 새 대화로 이어갑니다. 직전 메시지는 다시 보내주세요.]',
+      timestamp: new Date().toISOString(),
+    });
+
+    // Restart after the dying process is cleaned up: the agent is still
+    // registered at this point, so starting now would be rejected as "already
+    // running". handleAgentExit picks this up once the slot is free.
+    //
+    // isNewSession must be honoured — recovery mints an id the CLI has never
+    // seen, so resuming it would fail identically and loop. `--session-id` is
+    // what actually creates it.
+    this.pendingRecoveryRestarts.set(projectId, {
+      conversationId: recovery.conversationId,
+      isNewSession: recovery.isNewSession,
+    });
+  }
+
+  /**
+   * Starts the agent again after a session-recovery exit. Runs from
+   * handleAgentExit, once the previous agent has been removed.
+   */
+  private async restartAfterSessionRecovery(projectId: string): Promise<void> {
+    const pending = this.pendingRecoveryRestarts.get(projectId);
+
+    if (!pending) {
+      return;
+    }
+
+    this.pendingRecoveryRestarts.delete(projectId);
+
+    try {
+      await this.startInteractiveAgent(projectId, {
+        sessionId: pending.conversationId,
+        isNewSession: pending.isNewSession,
+      });
+    } catch (error) {
+      // A failed restart must not take the instance down; the user can still
+      // start the agent from the UI.
+      this.logger.error('Could not restart agent after session recovery', {
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async handleAgentCompletionResponse(

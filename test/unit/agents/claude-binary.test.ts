@@ -4,6 +4,26 @@ import * as fs from 'fs';
 
 // Mock fs module
 jest.mock('fs');
+// ProcessManager.stop() shells out to a real `taskkill` on Windows (and the
+// claude-binary lookup shells out too). Letting a unit test spawn actual
+// processes made these tests exceed the 5s timeout whenever the full suite ran
+// them under parallel load -- they passed in isolation and failed in CI-like
+// runs, which is the worst kind of red. Resolve the callback immediately
+// instead; the behaviour under test is the cleanup that follows, not taskkill.
+jest.mock('child_process', () => {
+  const actual = jest.requireActual('child_process') as Record<string, unknown>;
+  return {
+    ...actual,
+    execFile: jest.fn((...args: unknown[]) => {
+      const done = args.find((a) => typeof a === 'function') as
+        | ((e: Error | null, out: string, err: string) => void)
+        | undefined;
+      if (done) done(null, '', '');
+      return { on: jest.fn(), kill: jest.fn() };
+    }),
+  };
+});
+
 
 // Helper to safely get spawn args
 function getSpawnArgs(spawner: ReturnType<typeof createMockProcessSpawner>): string[] {

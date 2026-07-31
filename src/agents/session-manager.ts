@@ -151,6 +151,25 @@ export class SessionManager {
         return await this.recoverSession(projectId, requestedSessionId);
       }
 
+      // A caller that asks for a specific id *and* says it is new means "create
+      // this session in the CLI", not "resume it".
+      //
+      // Without this, a conversation record existing in claudito was taken to
+      // mean the session exists in the CLI too. Those are different things: the
+      // CLI only knows a session once something has been written to its
+      // transcript. Session recovery creates the conversation record first, so
+      // this branch returned isNewSession=false, claudito passed --resume for an
+      // id the CLI had never seen, and the recovery failed exactly the same way
+      // it was recovering from — looping instead of healing.
+      if (isNewSessionRequested === true) {
+        await this.projectRepository.setCurrentConversation(projectId, requestedSessionId);
+        return {
+          conversationId: requestedSessionId,
+          sessionId: requestedSessionId,
+          isNewSession: true,
+        };
+      }
+
       // Check if the conversation exists
       const conversation = await this.conversationRepository.findById(projectId, requestedSessionId);
 
