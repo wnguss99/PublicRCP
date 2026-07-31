@@ -23,6 +23,7 @@ import {
   ProcessInfo,
   PermissionRequest,
 } from './types';
+import { EMAIL_MCP_TOOL_NAMES } from '../services/email-mcp-server';
 
 export interface ClaudeBinaryConfig {
   projectId: string;
@@ -667,8 +668,10 @@ export class ClaudeBinary implements Agent {
       agentTurns: this._limits.maxTurns,
       totalBudget: this._limits.totalBudget,
       cacheAnything: this._streaming.cacheAnything,
+      // Every tool the email MCP server exposes, not just send_email — a tool that
+      // is served but not allow-listed is silently unusable.
       allowedTools: this._emailMcpBaseUrl
-        ? [...(this._permissions.allowedTools || []), 'mcp__claudito-email__send_email']
+        ? [...(this._permissions.allowedTools || []), ...EMAIL_MCP_TOOL_NAMES]
         : this._permissions.allowedTools,
       disallowedTools: this._permissions.disallowedTools,
       permissionMode: options.permissionMode || this._permissions.permissionMode,
