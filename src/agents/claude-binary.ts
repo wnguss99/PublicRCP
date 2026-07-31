@@ -3,6 +3,7 @@ import { ChildProcess } from 'child_process';
 import * as fs from 'fs';
 
 import { getLogger, Logger } from '../utils/logger';
+import { ensureWorkspaceTrusted } from '../utils/workspace-trust';
 import { McpServerConfig } from '../repositories/settings';
 import { ProcessManager, ProcessSpawner } from './process-manager';
 import { StreamHandler } from './stream-handler';
@@ -261,6 +262,12 @@ export class ClaudeBinary implements Agent {
   }
 
   private spawnClaudeProcess(args: string[], env: Record<string, string>): ChildProcess {
+    // The CLI silently drops this project's permission allow-rules when the
+    // directory has not been trusted, and the trust dialog cannot be accepted
+    // from a --print run. Record the trust here, at the one place we launch the
+    // CLI, so it also covers projects added before this existed.
+    ensureWorkspaceTrusted(this.projectPath);
+
     const process = this.processManager.spawn('claude', args, this.projectPath, env);
     this.setupStreamProcessing(process);
     this.setStatus('running');
