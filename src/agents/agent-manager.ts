@@ -77,6 +77,7 @@ export interface AgentManagerEvents {
   message: (projectId: string, message: AgentMessage) => void;
   status: (projectId: string, status: AgentStatus) => void;
   waitingForInput: (projectId: string, waitingStatus: WaitingStatus) => void;
+  planStateChanged: (projectId: string, hasPendingPlan: boolean) => void;
   contextUsage: (projectId: string, usage: ContextUsage) => void;
   queueChange: (queue: QueuedProject[]) => void;
   milestoneStarted: (projectId: string, milestone: MilestoneRef) => void;
@@ -140,8 +141,33 @@ export interface FullAgentStatus {
   sessionId: string | null;
   permissionMode: 'acceptEdits' | 'plan' | null;
   hasActiveOneOffAgents: boolean;
+  hasPendingPlan: boolean;
   contextUsage?: ContextUsage | null;
 }
+
+/**
+ * Whether a stored ExitPlanMode plan is still a real gate.
+ *
+ * 'live'    — something genuinely waits on the user; keep blocking.
+ * 'cleared' — the run moved on without the card being answered; lock released.
+ * 'none'    — no plan was stored.
+ */
+export type PendingPlanState = 'none' | 'live' | 'cleared';
+
+interface PendingPlan {
+  planContent: string;
+  sessionId: string | null;
+  createdAt: number;
+}
+
+/**
+ * How long after ExitPlanMode a plan is trusted without further evidence.
+ *
+ * handleExitPlanMode marks the *manager* as waiting, but the underlying agent's
+ * own isWaitingForInput is still false at that instant. Without this window a
+ * legitimate plan would be judged stale on the very first liveness check.
+ */
+const PENDING_PLAN_GRACE_MS = 30_000;
 
 export interface AgentManager {
   startAgent(projectId: string, instructions: string): Promise<void>;
@@ -156,6 +182,7 @@ export interface AgentManager {
   isQueued(projectId: string): boolean;
   isWaitingForInput(projectId: string): boolean;
   hasPendingPlan(projectId: string): boolean;
+  reconcilePendingPlan(projectId: string): PendingPlanState;
   approvePlan(projectId: string, response: string): Promise<void>;
   getWaitingVersion(projectId: string): number;
   getResourceStatus(): AgentResourceStatus;
@@ -291,6 +318,7 @@ export class DefaultAgentManager implements AgentManager {
     message: new Set(),
     status: new Set(),
     waitingForInput: new Set(),
+    planStateChanged: new Set(),
     contextUsage: new Set(),
     queueChange: new Set(),
     milestoneStarted: new Set(),
@@ -314,7 +342,10 @@ export class DefaultAgentManager implements AgentManager {
   private readonly oneOffCommandHistory: Map<string, OneOffCommandEntry[]> = new Map();
   private readonly cliCommandHistory: Map<string, OneOffCommandEntry[]> = new Map();
   private queuedMessages: Map<string, string[]> = new Map();
-  private pendingPlans: Map<string, { planContent: string; sessionId: string | null }> = new Map();
+  // `createdAt` exists so a stale entry can be told apart from one that was set
+  // a moment ago: right after handleExitPlanMode the underlying agent has not
+  // yet flipped its own isWaitingForInput, so liveness needs a grace window.
+  private pendingPlans: Map<string, PendingPlan> = new Map();
 
   /**
    * Projects waiting to be restarted after a session-recovery exit.
@@ -364,6 +395,44 @@ export class DefaultAgentManager implements AgentManager {
 
     // Forward events from modules
     this.setupModuleEventForwarding();
+    this.setupApprovalCoordinatorListeners();
+  }
+
+  /**
+   * Let the CLI's own permission gate stand down claudito's plan card.
+   *
+   * ExitPlanMode goes through two independent approval paths: this manager's
+   * plan card, and the permission-prompt MCP server the CLI calls. Once the MCP
+   * gate has an answer the CLI acts on it immediately, so the card becomes a
+   * leftover that rejected every later message until the server restarted
+   * (2026-08-01: five projects across two ports).
+   */
+  private setupApprovalCoordinatorListeners(): void {
+    const coordinator = this.approvalCoordinator;
+    if (!coordinator) {
+      return;
+    }
+
+    coordinator.on('resolved', (_requestId, projectId, decision, pending) => {
+      if (pending?.toolName !== 'ExitPlanMode') {
+        return;
+      }
+      // Our own flow already handled it — handlePlanApprovalResponse deletes the
+      // entry before stopAgent() triggers cancelProject(), so this short-circuits
+      // instead of double-handling.
+      if (!this.pendingPlans.has(projectId)) {
+        return;
+      }
+
+      const allowed = decision.behavior === 'allow';
+      this.clearPendingPlan(
+        projectId,
+        `ExitPlanMode ${allowed ? 'approved' : 'denied'} through the permission prompt`,
+        allowed
+          ? '[플랜이 권한 승인 창에서 승인되었습니다. Claude 가 계속 진행합니다.]'
+          : '[플랜이 권한 승인 창에서 거부되었습니다.]'
+      );
+    });
   }
 
   private setupModuleEventForwarding(): void {
@@ -608,12 +677,17 @@ export class DefaultAgentManager implements AgentManager {
       throw new Error('Agent is not in interactive mode');
     }
 
-    // Check if this is a response to a pending plan approval
-    const pendingPlan = this.pendingPlans.get(projectId);
-    if (pendingPlan && agent.isWaitingForInput) {
-      // Handle plan approval response
-      void this.handlePlanApprovalResponse(projectId, input, pendingPlan);
-      return;
+    // A stored plan wins only while it is still a real gate. The old condition
+    // was `pendingPlan && agent.isWaitingForInput`, which double-locked the bug:
+    // once the CLI's own gate had been answered the agent resumed and cleared
+    // isWaitingForInput, so this branch was skipped while the entry stayed set
+    // forever. Reconciling instead drops the stale lock and delivers the message.
+    if (this.reconcilePendingPlan(projectId) === 'live') {
+      const pendingPlan = this.pendingPlans.get(projectId);
+      if (pendingPlan) {
+        void this.handlePlanApprovalResponse(projectId, input, pendingPlan);
+        return;
+      }
     }
 
     const contentToSend = images ? this.buildMultimodalContent(input, images) : input;
@@ -725,7 +799,94 @@ export class DefaultAgentManager implements AgentManager {
     return this.pendingPlans.has(projectId);
   }
 
+  /**
+   * Release a plan lock that nobody is going to answer.
+   *
+   * The plan card is set from stream observation, but the *decision* can be made
+   * by three different actors: the card itself, the CLI's own permission modal,
+   * or the session allowlist auto-approving with no visible event at all. Only
+   * the first used to unlock it, so the other two left every later message
+   * rejected with 400 until the server restarted.
+   */
+  private clearPendingPlan(projectId: string, reason: string, notice?: string): void {
+    if (!this.pendingPlans.delete(projectId)) {
+      return;
+    }
+
+    this.logger.warn('Pending plan cleared outside the plan controls', { projectId, reason });
+
+    if (notice) {
+      this.emit('message', projectId, {
+        type: 'system',
+        content: notice,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Release the input the plan card locked. The version must come from the
+    // shared counter — the client drops any event that is not strictly newer.
+    const version = this.nextWaitingVersion(projectId);
+    const isWaiting = this.isWaitingForInput(projectId);
+    if (isWaiting) {
+      this.waitingVersions.set(projectId, version);
+    }
+    this.emit('waitingForInput', projectId, { isWaiting, version });
+    this.emit('planStateChanged', projectId, false);
+  }
+
+  /**
+   * Decide whether a stored plan is still a real gate, and drop it if not.
+   *
+   * Liveness is derived from facts, never from a bare timeout: a plan gates
+   * input only while something actually waits on the user — the CLI's own
+   * ExitPlanMode prompt is still open, or the agent is idle at the end of its
+   * turn. Anything else means the run moved on without the card being answered
+   * (the CLI's gate decided it, the agent restarted, the process died), and
+   * keeping the entry rejects every later message until a restart.
+   */
+  reconcilePendingPlan(projectId: string): PendingPlanState {
+    const pending = this.pendingPlans.get(projectId);
+    if (!pending) {
+      return 'none';
+    }
+
+    const agent = this.agents.get(projectId);
+
+    if (!agent) {
+      this.clearPendingPlan(projectId, 'no agent is running for the stored plan');
+      return 'cleared';
+    }
+
+    if (pending.sessionId && agent.sessionId && pending.sessionId !== agent.sessionId) {
+      this.clearPendingPlan(projectId, 'plan belongs to a session that is no longer running');
+      return 'cleared';
+    }
+
+    // The CLI's own gate is still open — the user is looking at the modal.
+    if (this.approvalCoordinator?.hasPendingForTool(projectId, 'ExitPlanMode')) {
+      return 'live';
+    }
+
+    // Turn ended: the agent is idle, genuinely waiting for the plan answer.
+    if (agent.isWaitingForInput) {
+      return 'live';
+    }
+
+    if (Date.now() - pending.createdAt < PENDING_PLAN_GRACE_MS) {
+      return 'live';
+    }
+
+    this.clearPendingPlan(
+      projectId,
+      'agent kept running without the plan card being answered',
+      '[플랜 승인 대기 상태를 해제했습니다. Claude 가 이미 계속 진행했습니다.]'
+    );
+    return 'cleared';
+  }
+
   async approvePlan(projectId: string, response: string): Promise<void> {
+    // Deliberately does not reconcile: an explicit user click is always
+    // honoured, and this is the zero-deploy escape hatch out of a stuck lock.
     const pendingPlan = this.pendingPlans.get(projectId);
     if (!pendingPlan) return;
     await this.handlePlanApprovalResponse(projectId, response, pendingPlan);
@@ -884,6 +1045,8 @@ export class DefaultAgentManager implements AgentManager {
       sessionId: this.getSessionId(projectId),
       permissionMode: agent?.permissionMode || null,
       hasActiveOneOffAgents: activeOneOffs.length > 0,
+      // Exposed so the UI never shows an input the send route would reject.
+      hasPendingPlan: this.pendingPlans.has(projectId),
       contextUsage: this.getContextUsage(projectId),
     };
   }
@@ -1167,6 +1330,8 @@ export class DefaultAgentManager implements AgentManager {
       sessionId: agent.sessionId,
       permissionMode: agent.permissionMode || null,
       hasActiveOneOffAgents: false,
+      // Plan approval is a main-agent concept; one-off agents have no plan card.
+      hasPendingPlan: false,
     };
   }
 
@@ -1622,7 +1787,7 @@ export class DefaultAgentManager implements AgentManager {
     });
 
     // Store the plan content for later use when user approves
-    this.pendingPlans.set(projectId, { planContent, sessionId });
+    this.pendingPlans.set(projectId, { planContent, sessionId, createdAt: Date.now() });
 
     // Send a plan_mode message to the frontend for user approval
     const planModeMessage: AgentMessage = {
@@ -1656,6 +1821,7 @@ export class DefaultAgentManager implements AgentManager {
     this.waitingVersions.set(projectId, waitingVersion);
 
     this.emit('waitingForInput', projectId, { isWaiting: true, version: waitingVersion });
+    this.emit('planStateChanged', projectId, true);
   }
 
   private async handleEnterPlanMode(agent: Agent): Promise<void> {
@@ -1690,8 +1856,11 @@ export class DefaultAgentManager implements AgentManager {
     response: string,
     pendingPlan: { planContent: string; sessionId: string | null }
   ): Promise<void> {
-    // Clear the pending plan
+    // Clear the pending plan. Not routed through clearPendingPlan(): that logs a
+    // warning for locks nobody answered and re-emits waiting state the restart
+    // below owns. Here the user did answer, so only the UI needs to converge.
     this.pendingPlans.delete(projectId);
+    this.emit('planStateChanged', projectId, false);
 
     if (response.toLowerCase() === 'yes') {
       // User approved the plan

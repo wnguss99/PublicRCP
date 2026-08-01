@@ -16,8 +16,28 @@ export interface PendingApproval {
 
 export interface ApprovalCoordinatorEvents {
   request: (pending: PendingApproval) => void;
-  resolved: (requestId: string, projectId: string, decision: ApprovalDecision) => void;
+  resolved: (
+    requestId: string,
+    projectId: string,
+    decision: ApprovalDecision,
+    pending: PendingApproval
+  ) => void;
   cancelled: (requestId: string, projectId: string) => void;
+}
+
+/**
+ * Tools whose approval decides one specific action, never a standing policy.
+ *
+ * "Allow always" for these degrades to a plain "allow". Remembering them
+ * silently skips a gate the rest of claudito relies on *observing*:
+ * ExitPlanMode drives the plan-approval card, and an auto-approved prompt
+ * produces no user-visible event at all, so the card stays locked with nothing
+ * to click and every later message rejected with 400.
+ */
+export const ONE_SHOT_APPROVAL_TOOLS = new Set(['ExitPlanMode']);
+
+export function isOneShotApprovalTool(toolName: string): boolean {
+  return ONE_SHOT_APPROVAL_TOOLS.has(toolName);
 }
 
 interface InternalEntry {
@@ -113,8 +133,16 @@ export class ApprovalCoordinator extends EventEmitter {
   /**
    * Register a session-scoped auto-approval. Called when the user clicks "Allow always".
    * The key is shared with `request()` via buildAllowKey().
+   *
+   * Returns null — and remembers nothing — for one-shot tools; see
+   * ONE_SHOT_APPROVAL_TOOLS for why that must never become standing policy.
    */
-  rememberAllow(projectId: string, toolName: string, input: Record<string, unknown>): string {
+  rememberAllow(projectId: string, toolName: string, input: Record<string, unknown>): string | null {
+    if (isOneShotApprovalTool(toolName)) {
+      this.logger.info('Refusing to remember a one-shot approval', { projectId, toolName });
+      return null;
+    }
+
     const key = buildAllowKey(toolName, input);
     let set = this.sessionAllowlist.get(projectId);
     if (!set) {
@@ -149,6 +177,22 @@ export class ApprovalCoordinator extends EventEmitter {
     return entry ? entry.pending : null;
   }
 
+  /**
+   * True while this project still has an unanswered prompt for the tool.
+   *
+   * Used to tell "the user is looking at the modal right now" apart from "the
+   * decision was already made elsewhere", so a live gate is never mistaken for
+   * a stale one.
+   */
+  hasPendingForTool(projectId: string, toolName: string): boolean {
+    for (const entry of this.entries.values()) {
+      if (entry.pending.projectId === projectId && entry.pending.toolName === toolName) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   listForProject(projectId: string): PendingApproval[] {
     const out: PendingApproval[] = [];
     for (const entry of this.entries.values()) {
@@ -167,7 +211,7 @@ export class ApprovalCoordinator extends EventEmitter {
     clearTimeout(entry.timeoutHandle);
     this.entries.delete(requestId);
     entry.resolve(decision);
-    this.emit('resolved', requestId, entry.pending.projectId, decision);
+    this.emit('resolved', requestId, entry.pending.projectId, decision, entry.pending);
     return true;
   }
 }

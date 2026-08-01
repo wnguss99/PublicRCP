@@ -59,6 +59,9 @@
       currentPlanFile: null,
       waitingVersion: 0,
       activePromptType: null,
+      // Mirrors the server's plan lock. null = not yet known, so a persisted
+      // plan_mode message is still restored on first load.
+      hasPendingPlan: null,
       isModeSwitching: false,
 
       // Resource status

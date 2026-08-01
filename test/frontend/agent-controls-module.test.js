@@ -39,6 +39,7 @@ describe('AgentControlsModule', () => {
       ralphLoopCurrentIteration: null,
       ralphLoopMaxTurns: null,
       sendWithCtrlEnter: false,
+      activePromptType: null,
     };
 
     mockFindProjectById = jest.fn();
@@ -387,6 +388,42 @@ describe('AgentControlsModule', () => {
 
       expect(document.getElementById('input-message').disabled).toBe(false);
       expect(mockUpdateInputHint).toHaveBeenCalledTimes(3);
+    });
+
+    /**
+     * This used to enable the input unconditionally. Since it runs on every
+     * agent_status message, it re-enabled the composer while a prompt was still
+     * blocking, and the resulting send came back 400 — the UI and the server
+     * disagreed about whether typing was allowed.
+     */
+    it('should keep input disabled while a plan prompt is active', () => {
+      mockState.activePromptType = 'plan_mode';
+
+      AgentControlsModule.updateInputArea();
+
+      expect(document.getElementById('input-message').disabled).toBe(true);
+      expect(document.getElementById('btn-send-message').disabled).toBe(true);
+    });
+
+    it('should keep input disabled for question and permission prompts too', () => {
+      ['question', 'permission', 'askuser', 'compacting'].forEach(function(promptType) {
+        mockState.activePromptType = promptType;
+        AgentControlsModule.updateInputArea();
+
+        expect(document.getElementById('input-message').disabled).toBe(true);
+        expect(document.getElementById('btn-send-message').disabled).toBe(true);
+      });
+    });
+
+    it('should re-enable once the prompt is cleared', () => {
+      mockState.activePromptType = 'plan_mode';
+      AgentControlsModule.updateInputArea();
+
+      mockState.activePromptType = null;
+      AgentControlsModule.updateInputArea();
+
+      expect(document.getElementById('input-message').disabled).toBe(false);
+      expect(document.getElementById('btn-send-message').disabled).toBe(false);
     });
   });
 

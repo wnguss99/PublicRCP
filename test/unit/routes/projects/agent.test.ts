@@ -662,5 +662,72 @@ describe('Agent routes', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('plan approval');
     });
+
+    it('should tag a live plan rejection with PLAN_APPROVAL_PENDING', async () => {
+      const deps = buildDeps();
+      deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
+      deps.agentManager.getAgentMode = jest.fn().mockReturnValue('interactive');
+      deps.agentManager.reconcilePendingPlan = jest.fn().mockReturnValue('live');
+      const app = buildApp(deps);
+
+      const response = await request(app)
+        .post(`/api/projects/${PROJECT_ID}/agent/send`)
+        .send({ message: 'Hello' });
+
+      expect(response.status).toBe(400);
+      // The frontend keys off this code to converge on the blocked state instead
+      // of merely showing a toast.
+      expect(response.body.code).toBe('PLAN_APPROVAL_PENDING');
+    });
+
+    /**
+     * The 2026-08-01 lockout: a plan the CLI already decided kept rejecting every
+     * message. A stale plan must be dropped and the message delivered.
+     */
+    it('should send normally when a stale plan is reconciled away', async () => {
+      const deps = buildDeps();
+      deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
+      deps.agentManager.getAgentMode = jest.fn().mockReturnValue('interactive');
+      deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(true);
+      deps.agentManager.reconcilePendingPlan = jest.fn().mockReturnValue('cleared');
+      const app = buildApp(deps);
+
+      const response = await request(app)
+        .post(`/api/projects/${PROJECT_ID}/agent/send`)
+        .send({ message: 'Hello' });
+
+      expect(response.status).toBe(200);
+      expect(deps.agentManager.sendInput).toHaveBeenCalledWith(PROJECT_ID, 'Hello', undefined);
+    });
+
+    it('should still route plan feedback even when reconcile would clear', async () => {
+      const deps = buildDeps();
+      deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(true);
+      deps.agentManager.reconcilePendingPlan = jest.fn().mockReturnValue('cleared');
+      const app = buildApp(deps);
+
+      const response = await request(app)
+        .post(`/api/projects/${PROJECT_ID}/agent/send`)
+        .send({ message: 'yes', planFeedback: true });
+
+      expect(response.status).toBe(200);
+      expect(deps.agentManager.approvePlan).toHaveBeenCalledWith(PROJECT_ID, 'yes');
+      expect(deps.agentManager.sendInput).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /agent/status', () => {
+    it('should reconcile the plan lock and report hasPendingPlan', async () => {
+      const deps = buildDeps();
+      deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(false);
+      const app = buildApp(deps);
+
+      const response = await request(app).get(`/api/projects/${PROJECT_ID}/agent/status`);
+
+      expect(response.status).toBe(200);
+      // The 10s status poll is what retires a stale lock when nobody sends.
+      expect(deps.agentManager.reconcilePendingPlan).toHaveBeenCalledWith(PROJECT_ID);
+      expect(response.body.hasPendingPlan).toBe(false);
+    });
   });
 });

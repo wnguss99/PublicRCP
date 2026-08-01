@@ -1028,6 +1028,11 @@
     var project = findProjectById(state.selectedProjectId);
     if (!project || project.status !== 'running') return;
 
+    // The plan_mode message stays in the conversation after the plan is resolved,
+    // so replaying it on reload would re-block a composer the server now accepts.
+    // The server's hasPendingPlan is the authority.
+    if (pendingType === 'plan_mode' && state.hasPendingPlan === false) return;
+
     setPromptBlockingState(pendingType);
 
     if (pendingType === 'plan_mode') {
@@ -3613,6 +3618,35 @@
     }
   }
 
+  /**
+   * Keep the composer in agreement with what the server will actually accept.
+   *
+   * The plan lock lives on the server (agentManager.pendingPlans) and is now
+   * reported as `hasPendingPlan`. Before this existed the two could disagree in
+   * both directions: the UI showed an enabled input the send route rejected with
+   * 400, or kept the input disabled long after the plan had been resolved
+   * through the CLI's own permission modal.
+   */
+  function syncPlanBlockingState(projectId, fullStatus) {
+    if (!fullStatus || typeof fullStatus.hasPendingPlan !== 'boolean') return;
+    if (projectId !== state.selectedProjectId) return;
+
+    state.hasPendingPlan = fullStatus.hasPendingPlan;
+
+    if (!fullStatus.hasPendingPlan) {
+      if (state.activePromptType === 'plan_mode') {
+        setPromptBlockingState(null);
+      }
+      // The card's buttons would post to a plan that no longer exists.
+      $('.plan-mode-actions button').prop('disabled', true).addClass('opacity-50 cursor-not-allowed');
+      return;
+    }
+
+    if (state.activePromptType === null && fullStatus.status === 'running') {
+      setPromptBlockingState('plan_mode');
+    }
+  }
+
   function setGitOperationState(isOperating) {
     state.isGitOperating = isOperating;
 
@@ -3745,15 +3779,22 @@
         ImageAttachmentModule.clearAll();
       })
       .fail(function(xhr) {
+        // The server still holds a live plan gate. Converge on its view instead
+        // of re-enabling an input whose next send would be rejected too.
+        if (xhr.responseJSON && xhr.responseJSON.code === 'PLAN_APPROVAL_PENDING') {
+          state.hasPendingPlan = true;
+          setPromptBlockingState('plan_mode');
+        }
         showErrorToast(xhr, 'Failed to send message');
       })
       .always(function() {
         state.messageSending = false;
-        $input.prop('disabled', false);
-        $('#btn-send-message').prop('disabled', false);
+        // Respects the active prompt — an unconditional enable here would undo
+        // the plan block set above.
+        updateInputArea();
         if (isTouchDevice) {
           $input.attr('inputmode', 'none');
-        } else {
+        } else if (!$input.prop('disabled')) {
           $input.focus();
         }
       });
@@ -4182,6 +4223,11 @@
           updateQueuedMessagesDisplay();
           stopAgentStatusPolling();
         }
+
+        // Must run before updateInputArea(): it reads state.activePromptType, so
+        // the plan lock has to be reconciled first or the composer flips to the
+        // wrong state for one render.
+        syncPlanBlockingState(projectId, data);
 
         updateStartStopButtons();
         updateInputArea();
@@ -5142,6 +5188,11 @@
         if (response.sessionId) {
           state.currentSessionId = response.sessionId;
         }
+
+        // This poll runs every 10s and the route reconciles the plan lock before
+        // answering, so a stale lock converges here within one interval even if
+        // no WebSocket event ever arrives.
+        syncPlanBlockingState(projectId, response);
 
         // Update isWaitingForInput from polling response (only if server version is newer)
         if (project && typeof response.isWaitingForInput === 'boolean') {
@@ -6197,6 +6248,10 @@
 
       // Update context usage indicator
       updateContextUsageIndicator(fullStatus && fullStatus.contextUsage);
+
+      // Reconcile the plan lock with the server before anything re-enables the
+      // input below — the server is the only authority on whether a send passes.
+      syncPlanBlockingState(projectId, fullStatus);
 
       // Update waiting indicator in main panel
       if (fullStatus && status === 'running') {

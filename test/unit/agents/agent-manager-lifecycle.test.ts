@@ -1233,6 +1233,7 @@ describe('AgentManager Lifecycle Tests', () => {
         sessionId: null,
         permissionMode: null,
         hasActiveOneOffAgents: false,
+        hasPendingPlan: false,
         contextUsage: null,
       });
 

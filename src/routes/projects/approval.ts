@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { ProjectRouterDependencies } from './types';
-import { ApprovalDecision, buildAllowRule } from '../../services/permission-prompt';
+import {
+  ApprovalDecision,
+  buildAllowRule,
+  isOneShotApprovalTool,
+} from '../../services/permission-prompt';
 import { getLogger } from '../../utils/logger';
 
 interface ApprovalBody {
@@ -52,20 +56,30 @@ export function createApprovalRouter(deps: ProjectRouterDependencies): Router {
         res.status(404).json({ error: 'Unknown or already-resolved approval' });
         return;
       }
-      // 1) Session allowlist — same key auto-passes for the rest of this agent session.
-      coordinator.rememberAllow(pending.projectId, pending.toolName, pending.input);
-      // 2) Persist a Claude Code allow rule to project.permissionOverrides so future sessions skip it too.
-      persistedRule = buildAllowRule(pending.toolName, pending.input);
-      try {
-        await persistProjectAllowRule(deps, pending.projectId, persistedRule);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn('Failed to persist allow rule (session allowlist still active)', {
+      if (isOneShotApprovalTool(pending.toolName)) {
+        // A per-plan decision must not become standing policy. Remembering
+        // ExitPlanMode auto-approved later prompts with no user-visible event,
+        // which left the plan card locked and every message rejected.
+        logger.info('allow_always downgraded to a one-time allow', {
           projectId: pending.projectId,
-          rule: persistedRule,
-          error: msg,
+          toolName: pending.toolName,
         });
-        persistedRule = null;
+      } else {
+        // 1) Session allowlist — same key auto-passes for the rest of this agent session.
+        coordinator.rememberAllow(pending.projectId, pending.toolName, pending.input);
+        // 2) Persist a Claude Code allow rule to project.permissionOverrides so future sessions skip it too.
+        persistedRule = buildAllowRule(pending.toolName, pending.input);
+        try {
+          await persistProjectAllowRule(deps, pending.projectId, persistedRule);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn('Failed to persist allow rule (session allowlist still active)', {
+            projectId: pending.projectId,
+            rule: persistedRule,
+            error: msg,
+          });
+          persistedRule = null;
+        }
       }
     }
 

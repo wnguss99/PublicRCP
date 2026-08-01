@@ -145,6 +145,34 @@ Removing the variable for good needs the registry entry gone, not just
 `Remove-ItemProperty HKCU:\Environment -Name ANTHROPIC_API_KEY`. Already-running
 PM2 processes keep the old value until the daemon restarts.
 
+### ExitPlanMode has two approval paths — they must never disagree
+
+`ExitPlanMode` is gated twice, by design: claudito's own plan card
+(`handleExitPlanMode` → `pendingPlans`) and the permission-prompt MCP server the
+CLI calls. Answering one used to leave the other set, and `agent/send` rejected
+every message with 400 until the process restarted. On 2026-08-01 that had hit
+**five projects across two ports**, G1 among them.
+
+- **`pendingPlans` may only gate a send while it is still live.** `handleSend`
+  and `GET /agent/status` both call `reconcilePendingPlan()`, which decides from
+  facts — agent alive, session still matches, CLI modal still open, agent idle —
+  never from a bare timeout. The 10 s status poll therefore retires a stale lock
+  even if nobody tries to send. Do not reintroduce a raw `hasPendingPlan()`
+  rejection.
+- **The `sendInput` plan branch must not require `agent.isWaitingForInput`.**
+  That was the second half of the deadlock: once the CLI's gate was answered the
+  agent resumed, the flag went false, and the branch that could have consumed the
+  plan was skipped while the entry stayed forever.
+- **"Allow always" is refused for `ExitPlanMode`** (`ONE_SHOT_APPROVAL_TOOLS`).
+  Remembering it made later prompts auto-approve with *no user-visible event at
+  all*, so the card locked with nothing to click — the variant no event hook can
+  catch, which is why the reconcile above is mandatory rather than a nicety.
+- **`getFullStatus().hasPendingPlan` is the UI's only authority.**
+  `updateInputArea()` used to enable the composer unconditionally on every
+  `agent_status`, so the UI offered an input the server would reject. It now
+  honours `state.activePromptType`, and `syncPlanBlockingState()` reconciles both
+  directions.
+
 ### Caveats that are inherent, not bugs
 
 - All three instances run as the **same OS account**. Any user can browse the whole

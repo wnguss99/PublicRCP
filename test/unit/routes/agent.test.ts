@@ -77,6 +77,7 @@ describe('Agent Router - One-off endpoints', () => {
         sessionId: null,
         permissionMode: 'acceptEdits',
         hasActiveOneOffAgents: false,
+        hasPendingPlan: false,
       };
 
       mockAgentManager.getOneOffStatus.mockReturnValue(mockStatus);

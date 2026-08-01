@@ -173,14 +173,16 @@
     }
   }
 
+  // This used to enable the input unconditionally, which made the UI contradict
+  // the server: it is called on every agent_status message, so it re-enabled the
+  // composer while a plan/question/permission prompt was still blocking, and the
+  // send then came back 400. Respect the active prompt instead.
   function updateInputArea() {
-    var isInteractiveMode = true;
+    var blocked = state.activePromptType !== null && state.activePromptType !== undefined;
 
-    if (isInteractiveMode) {
-      $('#input-message').prop('disabled', false);
-      $('#btn-send-message').prop('disabled', false);
-      updateInputHint();
-    }
+    $('#input-message').prop('disabled', blocked);
+    $('#btn-send-message').prop('disabled', blocked);
+    updateInputHint();
   }
 
   function formatRalphLoopStatusForLabel(status) {

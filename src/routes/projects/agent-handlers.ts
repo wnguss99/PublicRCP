@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { ValidationError, ConflictError, getLogger } from '../../utils';
+import { AppError, ValidationError, ConflictError, getLogger } from '../../utils';
 import { AgentManager } from '../../agents';
 import { AgentMessageBody } from './types';
 
@@ -39,6 +39,11 @@ export function handleStopAgent(agentManager: AgentManager) {
 export function handleGetStatus(agentManager: AgentManager) {
   return (req: Request, res: Response): void => {
     const id = req.params['id'] as string;
+
+    // Self-heal sweep. The frontend polls this every 10s, so a plan the CLI
+    // already decided is retired even if nobody tries to send a message — a
+    // stale lock can never outlive the run it belongs to.
+    agentManager.reconcilePendingPlan(id);
 
     const fullStatus = agentManager.getFullStatus(id);
     res.json(fullStatus);
@@ -261,9 +266,22 @@ export function handleSend(agentManager: AgentManager) {
       throw new ValidationError('Agent is not in interactive mode');
     }
 
-    if (agentManager.hasPendingPlan(id)) {
+    // Only a plan that is still a real gate may reject a message. A stale one is
+    // dropped here instead, so no cause of orphaned plan state can lock a user
+    // out permanently.
+    const planState = agentManager.reconcilePendingPlan(id);
+
+    if (planState === 'live') {
       logger.warn('Rejected: plan approval pending', { projectId: id });
-      throw new ValidationError('Agent is waiting for plan approval. Use the plan approval controls.');
+      throw new AppError(
+        'Agent is waiting for plan approval. Use the plan approval controls.',
+        400,
+        'PLAN_APPROVAL_PENDING'
+      );
+    }
+
+    if (planState === 'cleared') {
+      logger.warn('Stale plan approval state cleared, sending normally', { projectId: id });
     }
 
     logger.info('Sending input to agent', { projectId: id });

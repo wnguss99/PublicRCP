@@ -582,6 +582,17 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
       });
     });
 
+    // Reuse the agent_status channel rather than adding a message type: the
+    // payload already carries hasPendingPlan, so the client converges on the
+    // same code path it uses for every other status change.
+    this.agentManager.on('planStateChanged', (projectId) => {
+      this.broadcast({
+        type: 'agent_status',
+        projectId,
+        data: this.agentManager.getFullStatus(projectId),
+      });
+    });
+
     this.agentManager.on('contextUsage', (projectId, usage) => {
       this.broadcastToProject(projectId, {
         type: 'context_usage',

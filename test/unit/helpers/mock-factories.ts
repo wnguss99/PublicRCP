@@ -1046,6 +1046,12 @@ export function createMockAgentManager(): jest.Mocked<AgentManager> {
     }),
     isWaitingForInput: jest.fn().mockReturnValue(false),
     hasPendingPlan: jest.fn().mockReturnValue(false),
+    // Derived from hasPendingPlan at call time, so a test that overrides
+    // hasPendingPlan keeps getting the "live" behaviour it expects without
+    // having to know reconcilePendingPlan exists.
+    reconcilePendingPlan: jest.fn().mockImplementation((projectId: string) => {
+      return mock.hasPendingPlan(projectId) ? 'live' : 'none';
+    }),
     approvePlan: jest.fn().mockResolvedValue(undefined),
     getWaitingVersion: jest.fn().mockReturnValue(0),
     getResourceStatus: jest.fn().mockImplementation(() => ({
@@ -1094,6 +1100,7 @@ export function createMockAgentManager(): jest.Mocked<AgentManager> {
         sessionId: null,
         permissionMode: null,
         hasActiveOneOffAgents: false,
+        hasPendingPlan: mock.hasPendingPlan(projectId),
       };
       return fullStatus;
     }),
