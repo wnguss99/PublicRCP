@@ -1828,24 +1828,33 @@ describe('DefaultAgentManager', () => {
       expect(mockProjectRepo.updateStatus).toHaveBeenCalledWith('test-project', 'running');
     });
 
-    it('should map error status to project error status', async () => {
+    /**
+     * The stored status is derived from the agent that owns the project, not from
+     * the value carried by the event. Copying the reported value is what let a
+     * dying agent's 'error' outlive the replacement that was already running
+     * (2026-08-03, G1) — see "A project's status has exactly one owner".
+     */
+    it('records error when the owning agent really is in error', async () => {
       await agentManager.startInteractiveAgent('test-project');
 
-      const agent = mockAgent as unknown as { _emit: (event: string, ...args: unknown[]) => void };
-      agent._emit('status', 'error');
+      const agent = mockAgent as unknown as { _setStatus: (s: string) => void };
+      agent._setStatus('error');
 
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(mockProjectRepo.updateStatus).toHaveBeenCalledWith('test-project', 'error');
     });
 
-    it('should map stopped status to project stopped status', async () => {
+    it('ignores a reported status that contradicts the owning agent', async () => {
       await agentManager.startInteractiveAgent('test-project');
+      mockProjectRepo.updateStatus.mockClear();
 
+      // The agent is running; a bare 'stopped' report must not be written.
       const agent = mockAgent as unknown as { _emit: (event: string, ...args: unknown[]) => void };
       agent._emit('status', 'stopped');
 
       await new Promise(resolve => setTimeout(resolve, 50));
-      expect(mockProjectRepo.updateStatus).toHaveBeenCalledWith('test-project', 'stopped');
+      expect(mockProjectRepo.updateStatus).toHaveBeenCalledWith('test-project', 'running');
+      expect(mockProjectRepo.updateStatus).not.toHaveBeenCalledWith('test-project', 'stopped');
     });
   });
 
@@ -2482,8 +2491,10 @@ describe('DefaultAgentManager', () => {
     it('should update project status to error when agent status is error', async () => {
       await agentManager.startInteractiveAgent('test-project');
 
-      const agent = mockAgent as unknown as { _emit: (event: string, ...args: unknown[]) => void };
-      agent._emit('status', 'error');
+      // _setStatus makes the owning agent actually be in error, which is what the
+      // persisted value is derived from.
+      const agent = mockAgent as unknown as { _setStatus: (s: string) => void };
+      agent._setStatus('error');
 
       await new Promise(resolve => setTimeout(resolve, 50));
 
@@ -2493,8 +2504,8 @@ describe('DefaultAgentManager', () => {
     it('should update project status to stopped for other statuses', async () => {
       await agentManager.startInteractiveAgent('test-project');
 
-      const agent = mockAgent as unknown as { _emit: (event: string, ...args: unknown[]) => void };
-      agent._emit('status', 'idle');
+      const agent = mockAgent as unknown as { _setStatus: (s: string) => void };
+      agent._setStatus('idle');
 
       await new Promise(resolve => setTimeout(resolve, 50));
 
@@ -3771,8 +3782,8 @@ describe('DefaultAgentManager', () => {
       statusHandler.mockClear();
       mockProjectRepo.updateStatus.mockClear();
 
-      const agent = mockAgent as unknown as { _emit: (event: string, ...args: unknown[]) => void };
-      agent._emit('status', 'error');
+      const agent = mockAgent as unknown as { _setStatus: (s: string) => void };
+      agent._setStatus('error');
 
       // Give time for the async handleStatusChange to run
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -3780,6 +3791,33 @@ describe('DefaultAgentManager', () => {
       // Both emit and updateStatus should have been called
       expect(statusHandler).toHaveBeenCalledWith('test-project', 'error');
       expect(mockProjectRepo.updateStatus).toHaveBeenCalledWith('test-project', 'error');
+    });
+
+    /**
+     * The event is always emitted, even from a replaced agent, so the UI can show
+     * what happened — but only the current owner may change what is stored.
+     */
+    it('emits a replaced agent\'s status without persisting it', async () => {
+      const statusHandler = jest.fn();
+      agentManager.on('status', statusHandler);
+
+      await agentManager.startInteractiveAgent('test-project');
+      statusHandler.mockClear();
+      mockProjectRepo.updateStatus.mockClear();
+
+      // A different agent now owns the project; mockAgent is the replaced one.
+      const replaced = mockAgent;
+      (agentManager as unknown as { agents: Map<string, unknown> }).agents.set(
+        'test-project',
+        createMockAgent('test-project')
+      );
+
+      await (
+        agentManager as unknown as { handleStatusChange: (a: unknown, s: string) => Promise<void> }
+      ).handleStatusChange(replaced, 'error');
+
+      expect(statusHandler).toHaveBeenCalledWith('test-project', 'error');
+      expect(mockProjectRepo.updateStatus).not.toHaveBeenCalled();
     });
   });
 

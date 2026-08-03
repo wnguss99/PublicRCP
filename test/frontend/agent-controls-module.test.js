@@ -391,39 +391,88 @@ describe('AgentControlsModule', () => {
     });
 
     /**
-     * This used to enable the input unconditionally. Since it runs on every
-     * agent_status message, it re-enabled the composer while a prompt was still
-     * blocking, and the resulting send came back 400 — the UI and the server
-     * disagreed about whether typing was allowed.
+     * updateInputArea() deliberately no longer decides anything about the
+     * composer, and both of its previous behaviours were bugs:
+     *
+     * - enabling unconditionally contradicted the server (send came back 400);
+     * - disabling from state.activePromptType removed the only thing that
+     *   recovered a leaked prompt lock, so a stuck lock became permanent and the
+     *   user could not type at all until the server was restarted.
+     *
+     * ComposerGate is the single writer. This function only asks it to re-apply,
+     * which means state.activePromptType alone must never disable the composer.
      */
-    it('should keep input disabled while a plan prompt is active', () => {
-      mockState.activePromptType = 'plan_mode';
-
-      AgentControlsModule.updateInputArea();
-
-      expect(document.getElementById('input-message').disabled).toBe(true);
-      expect(document.getElementById('btn-send-message').disabled).toBe(true);
-    });
-
-    it('should keep input disabled for question and permission prompts too', () => {
-      ['question', 'permission', 'askuser', 'compacting'].forEach(function(promptType) {
+    it('does not disable the composer from state.activePromptType', () => {
+      ['plan_mode', 'question', 'permission', 'askuser', 'compacting'].forEach(function(promptType) {
         mockState.activePromptType = promptType;
+
         AgentControlsModule.updateInputArea();
 
-        expect(document.getElementById('input-message').disabled).toBe(true);
-        expect(document.getElementById('btn-send-message').disabled).toBe(true);
+        expect(document.getElementById('input-message').disabled).toBe(false);
+        expect(document.getElementById('btn-send-message').disabled).toBe(false);
       });
     });
 
-    it('should re-enable once the prompt is cleared', () => {
-      mockState.activePromptType = 'plan_mode';
-      AgentControlsModule.updateInputArea();
+    it('keeps the composer usable even while ComposerGate tracks an operation', () => {
+      ComposerGate.init({ getSelectedProjectId: () => 'proj-1' });
+      ComposerGate.stop();
 
-      mockState.activePromptType = null;
+      ComposerGate.hold('prompt', { isLive: () => true, ttlMs: ComposerGate.TTL.PROMPT });
       AgentControlsModule.updateInputArea();
 
       expect(document.getElementById('input-message').disabled).toBe(false);
       expect(document.getElementById('btn-send-message').disabled).toBe(false);
+    });
+
+    it('re-enables a composer that some other code disabled behind its back', () => {
+      document.getElementById('input-message').disabled = true;
+      document.getElementById('btn-send-message').disabled = true;
+      mockState.activePromptType = 'plan_mode';
+
+      AgentControlsModule.updateInputArea();
+
+      expect(document.getElementById('input-message').disabled).toBe(false);
+      expect(document.getElementById('btn-send-message').disabled).toBe(false);
+    });
+  });
+
+  describe('updateRalphLoopControls composer locking', () => {
+    beforeEach(() => {
+      ComposerGate.init({ getSelectedProjectId: () => 'proj-1' });
+      ComposerGate.stop();
+    });
+
+    it('tracks a bounded operation while the loop runs and retires it when idle', () => {
+      AgentControlsModule.updateRalphLoopControls('worker_running');
+      expect(ComposerGate.has('ralph')).toBe(true);
+
+      AgentControlsModule.updateRalphLoopControls('completed');
+      expect(ComposerGate.has('ralph')).toBe(false);
+    });
+
+    it('never takes the composer away, running or idle', () => {
+      AgentControlsModule.updateRalphLoopControls('worker_running');
+      expect(document.getElementById('input-message').disabled).toBe(false);
+      expect(document.getElementById('btn-send-message').disabled).toBe(false);
+
+      AgentControlsModule.updateRalphLoopControls('completed');
+      expect(document.getElementById('input-message').disabled).toBe(false);
+    });
+
+    it('clears its flag when Ralph status updates stop arriving', () => {
+      const realNow = Date.now;
+      AgentControlsModule.updateRalphLoopControls('worker_running');
+
+      // No further status events; the loop flag is never cleared by an event.
+      Date.now = () => realNow() + ComposerGate.TTL.RALPH + 1000;
+      try {
+        ComposerGate.tick();
+      } finally {
+        Date.now = realNow;
+      }
+
+      expect(ComposerGate.has('ralph')).toBe(false);
+      expect(document.getElementById('input-message').disabled).toBe(false);
     });
   });
 
@@ -717,17 +766,22 @@ describe('AgentControlsModule', () => {
         expect($('#btn-ralph-loop-pause').hasClass('hidden')).toBe(false);
       });
 
-      it('should disable input when Ralph Loop is active', () => {
+      // The Ralph loop used to disable the composer. It no longer does: a loop
+      // whose status events stopped arriving left the input dead with no way
+      // back. The loop is now refused at send time (with a toast) instead, and
+      // ComposerGate retires the flag if the events dry up.
+      it('should NOT disable input when Ralph Loop is active', () => {
         AgentControlsModule.updateRalphLoopControls('worker_running');
 
-        expect(document.getElementById('input-message').disabled).toBe(true);
-        expect(document.getElementById('btn-send-message').disabled).toBe(true);
+        expect(document.getElementById('input-message').disabled).toBe(false);
+        expect(document.getElementById('btn-send-message').disabled).toBe(false);
       });
 
-      it('should add opacity to send form when Ralph Loop is active', () => {
+      it('should NOT grey out the send form when Ralph Loop is active', () => {
         AgentControlsModule.updateRalphLoopControls('worker_running');
 
-        expect($('#form-send-message').hasClass('opacity-50')).toBe(true);
+        // opacity-50 read as "disabled" even when typing worked.
+        expect($('#form-send-message').hasClass('opacity-50')).toBe(false);
       });
 
       it('should set isRalphLoopRunning to true', () => {
@@ -945,34 +999,33 @@ describe('AgentControlsModule', () => {
         expect(document.getElementById('agent-status-label').textContent).toBe('Reviewer running...');
       });
 
-      it('should toggle form opacity through full lifecycle', () => {
-        // Initially no opacity
+      it('never greys out the send form at any point in the lifecycle', () => {
         expect($('#form-send-message').hasClass('opacity-50')).toBe(false);
 
-        // Ralph Loop starts — opacity added
         AgentControlsModule.updateRalphLoopControls('worker_running');
-        expect($('#form-send-message').hasClass('opacity-50')).toBe(true);
+        expect($('#form-send-message').hasClass('opacity-50')).toBe(false);
 
-        // Ralph Loop ends, no agent — opacity removed
         mockFindProjectById.mockReturnValue({ status: 'stopped' });
         AgentControlsModule.updateRalphLoopControls(null);
         expect($('#form-send-message').hasClass('opacity-50')).toBe(false);
       });
 
-      it('should toggle input disabled state through full lifecycle', () => {
-        // Initially enabled
+      it('keeps the composer usable through the whole lifecycle', () => {
         expect(document.getElementById('input-message').disabled).toBe(false);
 
-        // Ralph Loop starts — disabled
         AgentControlsModule.updateRalphLoopControls('worker_running');
-        expect(document.getElementById('input-message').disabled).toBe(true);
-        expect(document.getElementById('btn-send-message').disabled).toBe(true);
+        expect(document.getElementById('input-message').disabled).toBe(false);
+        expect(document.getElementById('btn-send-message').disabled).toBe(false);
 
-        // Ralph Loop ends, agent running — re-enabled via updateInputArea
         mockFindProjectById.mockReturnValue({ status: 'running' });
         AgentControlsModule.updateRalphLoopControls(null);
         expect(document.getElementById('input-message').disabled).toBe(false);
         expect(document.getElementById('btn-send-message').disabled).toBe(false);
+
+        // And once more with the agent stopped — still usable.
+        mockFindProjectById.mockReturnValue({ status: 'stopped' });
+        AgentControlsModule.updateRalphLoopControls(null);
+        expect(document.getElementById('input-message').disabled).toBe(false);
       });
     });
 

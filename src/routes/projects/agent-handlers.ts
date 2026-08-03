@@ -134,7 +134,10 @@ export function handleStartInteractive(agentManager: AgentManager) {
         throw new ConflictError('An autonomous agent is already running. Stop it first.');
       }
 
-      throw new ConflictError('An agent is already running');
+      // The mirror image of AGENT_NOT_RUNNING: the client thought the agent was
+      // stopped and tried to start it, but one is already up. Coded so the browser
+      // can just deliver the message to the running agent instead of losing it.
+      throw new AppError('An agent is already running', 409, 'AGENT_ALREADY_RUNNING');
     }
 
     const result = await agentManager.startInteractiveAgent(id, {
@@ -142,6 +145,11 @@ export function handleStartInteractive(agentManager: AgentManager) {
       images,
       sessionId,
       permissionMode,
+      // A user typed this. Starting an agent with a message is the same kind of
+      // turn as sending one to a running agent, so it belongs in the history —
+      // without this the stored conversation began with Claude's reply to a
+      // question that was nowhere in it.
+      persistInitialMessage: true,
     });
 
     const status = agentManager.isQueued(id) ? 'queued' : 'running';
@@ -254,34 +262,49 @@ export function handleSend(agentManager: AgentManager) {
       return;
     }
 
+    // Tagged with a code so the client can act on the *fact* instead of parsing
+    // this sentence: the browser answers AGENT_NOT_RUNNING by starting the agent
+    // with the same message. The UI's idea of whether an agent is alive is a
+    // cached belief, and every incident in this file came from that belief being
+    // out of date — so disagreeing with the server must be self-healing, not a
+    // dead end the user has to notice and retry by hand.
     if (!agentManager.isRunning(id)) {
       logger.warn('Agent not running', { projectId: id });
-      throw new ValidationError('Agent is not running');
+      throw new AppError('Agent is not running', 400, 'AGENT_NOT_RUNNING');
     }
 
     const mode = agentManager.getAgentMode(id);
 
     if (mode !== 'interactive') {
       logger.warn('Agent not in interactive mode', { projectId: id, mode });
-      throw new ValidationError('Agent is not in interactive mode');
-    }
-
-    // Only a plan that is still a real gate may reject a message. A stale one is
-    // dropped here instead, so no cause of orphaned plan state can lock a user
-    // out permanently.
-    const planState = agentManager.reconcilePendingPlan(id);
-
-    if (planState === 'live') {
-      logger.warn('Rejected: plan approval pending', { projectId: id });
       throw new AppError(
-        'Agent is waiting for plan approval. Use the plan approval controls.',
+        'An autonomous agent is running for this project. Stop it to chat.',
         400,
-        'PLAN_APPROVAL_PENDING'
+        'AGENT_NOT_INTERACTIVE'
       );
     }
 
-    if (planState === 'cleared') {
-      logger.warn('Stale plan approval state cleared, sending normally', { projectId: id });
+    // A pending plan never rejects a message.
+    //
+    // This used to throw 400 PLAN_APPROVAL_PENDING whenever reconcilePendingPlan()
+    // said the plan was live — but "live" is inferred, and one of its signals is
+    // simply that the agent is idle, which is also true of an agent that has
+    // already moved on. When that inference was wrong the user could not send
+    // anything at all: every message came back 400 telling them to use controls
+    // that were spent or had never rendered.
+    //
+    // The rejection was redundant as well as harmful. sendInput() already routes
+    // a message into handlePlanApprovalResponse() when a plan is genuinely
+    // pending: 'yes' approves, 'no' rejects, and anything else is delivered as
+    // plan feedback — exactly what typing a reply should mean. So reconcile to
+    // retire stale state, then hand the message over and let it be consumed.
+    const planState = agentManager.reconcilePendingPlan(id);
+
+    if (planState !== 'none') {
+      logger.info('Sending with plan state present; sendInput will consume it', {
+        projectId: id,
+        planState,
+      });
     }
 
     logger.info('Sending input to agent', { projectId: id });

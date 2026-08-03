@@ -80,7 +80,11 @@ export function createCoreRouter(deps: ProjectRouterDependencies): Router {
 
   // Get project by ID
   router.get('/:id', validateParams(projectIdSchema), projectExistsMiddleware, asyncHandler((req: Request, res: Response) => {
-    res.json(req.project!);
+    // Overlay the live status, as the list endpoint above already does. Returning
+    // the stored value let a stale status.json — e.g. left at 'error' by a crash —
+    // report a project as failed while its agent was running.
+    const project = req.project!;
+    res.json({ ...project, status: agentManager.getAgentStatus(project.id) });
   }));
 
   // Delete a project

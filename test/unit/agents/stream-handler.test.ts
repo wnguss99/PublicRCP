@@ -1264,4 +1264,31 @@ describe('StreamHandler', () => {
       expect(questionMessages).toHaveLength(1);
     });
   });
+  /**
+   * A rate limit used to be logged and nothing else. From the browser that was
+   * indistinguishable from a hang — spinner running, no message, for minutes — so
+   * the chat looked broken and users resent or restarted, neither of which helps.
+   */
+  describe('rate_limit_event', () => {
+    it('tells the user a rate limit was hit, with the wait', () => {
+      handler.processLine(JSON.stringify({
+        type: 'rate_limit_event',
+        retry_after_ms: 42000,
+      }));
+
+      const system = messages.filter(m => m.type === 'system');
+      expect(system).toHaveLength(1);
+      expect(system[0]!.content).toContain('42');
+      // Says not to resend — resending is the natural but wrong reaction.
+      expect(system[0]!.content).toContain('다시 보내지 않아도');
+    });
+
+    it('still explains itself when no retry delay is given', () => {
+      handler.processLine(JSON.stringify({ type: 'rate_limit_event' }));
+
+      const system = messages.filter(m => m.type === 'system');
+      expect(system).toHaveLength(1);
+      expect(system[0]!.content).toContain('한도');
+    });
+  });
 });

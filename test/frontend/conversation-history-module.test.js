@@ -98,7 +98,7 @@ describe('ConversationHistoryModule', () => {
       formatConversationDate: mockFormatConversationDate,
       formatDuration: mockFormatDuration,
       renderConversation: mockRenderConversation,
-      setPromptBlockingState: mockSetPromptBlockingState,
+      setPromptHintState: mockSetPromptBlockingState,
       SearchModule: mockSearchModule
     });
   });

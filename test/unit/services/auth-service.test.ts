@@ -168,6 +168,62 @@ describe('AuthService', () => {
     });
   });
 
+  /**
+   * Sessions were a hard 7 days from login with no extension, so an active user
+   * was logged out simply because a week had passed. On an install only reachable
+   * remotely that strands exactly the person who cannot get to the machine.
+   */
+  describe('touchSession (sliding expiry)', () => {
+    it('keeps an actively used session alive past the original expiry', () => {
+      const session = authService.createSession();
+      const originalExpiry = session.expiresAt;
+      const realNow = Date.now;
+
+      try {
+        // Six days later the user is still working.
+        Date.now = () => realNow() + 6 * 24 * 60 * 60 * 1000;
+        const touched = authService.touchSession(session.id);
+        expect(touched).not.toBeNull();
+        expect(touched!.expiresAt).toBeGreaterThan(originalExpiry);
+
+        // Eight days after login — past the original expiry, but still valid
+        // because it was used in between.
+        Date.now = () => realNow() + 8 * 24 * 60 * 60 * 1000;
+        expect(authService.validateSession(session.id)).toBe(true);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    it('still expires a session nobody used', () => {
+      const session = authService.createSession();
+      const realNow = Date.now;
+
+      try {
+        Date.now = () => realNow() + 8 * 24 * 60 * 60 * 1000;
+        expect(authService.touchSession(session.id)).toBeNull();
+        expect(authService.validateSession(session.id)).toBe(false);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    it('does not rewrite the expiry on every call', () => {
+      const session = authService.createSession();
+
+      const first = authService.touchSession(session.id);
+      const second = authService.touchSession(session.id);
+
+      // Within the throttle window the expiry is left alone, so a busy session
+      // does not rewrite the store on every request.
+      expect(second!.expiresAt).toBe(first!.expiresAt);
+    });
+
+    it('returns null for an unknown session', () => {
+      expect(authService.touchSession('nope')).toBeNull();
+    });
+  });
+
   describe('invalidateSession', () => {
     it('should invalidate a valid session', () => {
       const session = authService.createSession();

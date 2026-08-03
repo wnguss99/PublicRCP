@@ -1106,6 +1106,7 @@ export function createMockAgentManager(): jest.Mocked<AgentManager> {
     }),
     getTrackedProcesses: jest.fn().mockReturnValue([]),
     cleanupOrphanProcesses: jest.fn().mockResolvedValue({ killed: [], failed: [] }),
+    reconcilePersistedStatuses: jest.fn().mockResolvedValue(0),
     restartAllRunningAgents: jest.fn().mockResolvedValue(undefined),
     restartProjectAgent: jest.fn().mockResolvedValue(undefined),
     getRunningProjectIds: jest.fn().mockImplementation(() => Array.from(runningAgents.keys())),

@@ -116,6 +116,14 @@ export interface StartInteractiveAgentOptions {
   /** If true, use --session-id to create new session. If false/undefined, use --resume for existing sessions. */
   isNewSession?: boolean;
   slackMeta?: SlackMeta;
+  /**
+   * Persist `initialMessage` to the conversation as a user turn.
+   *
+   * Only true for a start the *user* triggered. Internal restarts pass synthetic
+   * prompts ('Continue', 'I approved the plan...') that must not be written into
+   * history as if the user had typed them.
+   */
+  persistInitialMessage?: boolean;
 }
 
 export interface StartAgentResult {
@@ -202,6 +210,7 @@ export interface AgentManager {
   getFullStatus(projectId: string): FullAgentStatus;
   getTrackedProcesses(): TrackedProcessInfo[];
   cleanupOrphanProcesses(): Promise<OrphanCleanupResult>;
+  reconcilePersistedStatuses(): Promise<number>;
   restartAllRunningAgents(): Promise<void>;
   restartProjectAgent(projectId: string): Promise<void>;
   getRunningProjectIds(): string[];
@@ -294,6 +303,8 @@ type EventListeners = {
  */
 export class DefaultAgentManager implements AgentManager {
   private readonly agents: Map<string, Agent> = new Map();
+  /** Per-agent listener teardown, so a replaced agent stops influencing its project. */
+  private readonly agentTeardowns: WeakMap<Agent, () => void> = new WeakMap();
   private readonly oneOffAgents: Map<string, Agent> = new Map();
   private readonly oneOffMeta: Map<string, OneOffMeta> = new Map();
   private readonly agentQueue: AgentQueue;
@@ -529,8 +540,23 @@ export class DefaultAgentManager implements AgentManager {
     };
   }
 
-  private recordSlackMessage(projectId: string, agent: Agent, options: StartInteractiveAgentOptions): void {
-    if (!options.initialMessage || !options.slackMeta) {
+  /**
+   * Write the message that started this agent into the conversation.
+   *
+   * Used to persist Slack-originated starts only, which meant a request typed in
+   * the UI while the agent was stopped reached Claude but was never recorded: the
+   * browser's optimistic append made it look saved, and after a reload the
+   * transcript began with Claude answering a question that was not there. The
+   * request that starts an agent is the same kind of turn as one sent to a
+   * running agent, so it is persisted the same way.
+   */
+  private recordInitialMessage(projectId: string, agent: Agent, options: StartInteractiveAgentOptions): void {
+    if (!options.initialMessage) {
+      return;
+    }
+
+    // Internal restarts carry synthetic prompts; only a user-triggered start opts in.
+    if (!options.slackMeta && !options.persistInitialMessage) {
       return;
     }
 
@@ -543,20 +569,24 @@ export class DefaultAgentManager implements AgentManager {
       type: 'user',
       content: options.initialMessage,
       timestamp: new Date().toISOString(),
-      source: options.slackMeta.source,
-      slackUsername: options.slackMeta.slackUsername,
+      ...(options.slackMeta
+        ? { source: options.slackMeta.source, slackUsername: options.slackMeta.slackUsername }
+        : {}),
     };
 
     this.trackMessageSave(
       this.conversationRepository.addMessage(projectId, conversationId, userMessage)
     ).catch((err) => {
-      this.logger.error('Failed to save initial Slack message to conversation', {
+      this.logger.error('Failed to save initial message to conversation', {
         projectId,
         error: err instanceof Error ? err.message : String(err),
       });
     });
 
-    this.emit('message', projectId, userMessage);
+    // Only Slack needs the broadcast; the browser already appended its own copy.
+    if (options.slackMeta) {
+      this.emit('message', projectId, userMessage);
+    }
   }
 
   async startInteractiveAgent(projectId: string, options?: StartInteractiveAgentOptions): Promise<StartAgentResult> {
@@ -622,7 +652,7 @@ export class DefaultAgentManager implements AgentManager {
     if (cliCmd) this.recordCliCommand(projectId, 'Interactive', cliCmd);
 
     if (options) {
-      this.recordSlackMessage(projectId, agent, options);
+      this.recordInitialMessage(projectId, agent, options);
     }
 
     return {
@@ -692,34 +722,49 @@ export class DefaultAgentManager implements AgentManager {
 
     const contentToSend = images ? this.buildMultimodalContent(input, images) : input;
 
-    // Save user message to conversation and broadcast to browser
-    const conversationId = agent.sessionId;
-    if (conversationId) {
-      const userMessage: AgentMessage = {
-        type: 'user',
-        content: input, // Save original input without image data
-        timestamp: new Date().toISOString(),
-        ...(slackMeta ? { source: slackMeta.source, slackUsername: slackMeta.slackUsername } : {}),
-      };
-
-      this.trackMessageSave(
-        this.conversationRepository.addMessage(projectId, conversationId, userMessage)
-      ).catch((err) => {
-        this.logger.error('Failed to save user message to conversation', {
-          projectId,
-          conversationId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-
-      // Only broadcast via WebSocket for Slack-sourced messages; UI-triggered sends
-      // already append the message locally (optimistic update in doSendMessage).
-      if (slackMeta) {
-        this.emit('message', projectId, userMessage);
-      }
-    }
+    this.persistUserMessage(projectId, input, slackMeta);
 
     agent.sendInput(contentToSend);
+  }
+
+  /**
+   * Record what the user said, so the turn survives a reload.
+   *
+   * Extracted from sendInput() because the plan-feedback path delivers real user
+   * prose to Claude without ever reaching it: the message was shown by the
+   * browser's optimistic append and then vanished on refresh, leaving a reply in
+   * the transcript with nothing prompting it.
+   */
+  private persistUserMessage(projectId: string, input: string, slackMeta?: SlackMeta): void {
+    const agent = this.agents.get(projectId);
+    const conversationId = agent?.sessionId;
+
+    if (!conversationId) {
+      return;
+    }
+
+    const userMessage: AgentMessage = {
+      type: 'user',
+      content: input, // Save original input without image data
+      timestamp: new Date().toISOString(),
+      ...(slackMeta ? { source: slackMeta.source, slackUsername: slackMeta.slackUsername } : {}),
+    };
+
+    this.trackMessageSave(
+      this.conversationRepository.addMessage(projectId, conversationId, userMessage)
+    ).catch((err) => {
+      this.logger.error('Failed to save user message to conversation', {
+        projectId,
+        conversationId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    // Only broadcast via WebSocket for Slack-sourced messages; UI-triggered sends
+    // already append the message locally (optimistic update in doSendMessage).
+    if (slackMeta) {
+      this.emit('message', projectId, userMessage);
+    }
   }
 
   sendToolResult(projectId: string, toolUseId: string, content: string): void {
@@ -1057,6 +1102,40 @@ export class DefaultAgentManager implements AgentManager {
 
   async cleanupOrphanProcesses(): Promise<OrphanCleanupResult> {
     return await this.processTracker.cleanupOrphanProcesses();
+  }
+
+  /**
+   * Clear statuses left over from a previous run.
+   *
+   * status.json is a cache of live process state, so a process that dies without
+   * running its exit handler — a crash, a kill -9, the machine going down —
+   * leaves 'running' or 'error' recorded with nothing behind it. On the next boot
+   * no agent exists, yet every fresh page load reported the project as running or
+   * failed. Called once at startup, before any agent can be created.
+   */
+  async reconcilePersistedStatuses(): Promise<number> {
+    const projects = await this.projectRepository.findAll();
+    let corrected = 0;
+
+    for (const project of projects) {
+      if (project.status === 'stopped') {
+        continue;
+      }
+
+      if (this.agents.has(project.id)) {
+        continue;
+      }
+
+      await this.projectRepository.updateStatus(project.id, 'stopped');
+      corrected++;
+
+      this.logger.info('Cleared a status left behind by a previous run', {
+        projectId: project.id,
+        previousStatus: project.status,
+      });
+    }
+
+    return corrected;
   }
 
   async restartAllRunningAgents(): Promise<void> {
@@ -1630,7 +1709,16 @@ export class DefaultAgentManager implements AgentManager {
           this.recordBashCommand(projectId, message.toolInfo);
         }
 
-        if (message.type === 'stdout' || message.type === 'tool_use' || message.type === 'tool_result') {
+        // 'system' carries what the run *did* — "Claude agent exited with code 1",
+        // plan approvals, mode switches. It used to be broadcast only, so the one
+        // line explaining a failure was gone the moment the page reloaded and the
+        // incident could not be reconstructed afterwards.
+        if (
+          message.type === 'stdout' ||
+          message.type === 'tool_use' ||
+          message.type === 'tool_result' ||
+          message.type === 'system'
+        ) {
           // These are assistant messages
           this.trackMessageSave(
             this.conversationRepository.addMessage(projectId, conversationId, message)
@@ -1654,10 +1742,14 @@ export class DefaultAgentManager implements AgentManager {
     };
 
     const statusListener = (status: AgentStatus): void => {
-      void this.handleStatusChange(projectId, status);
+      void this.handleStatusChange(agent, status);
     };
 
     const waitingListener = (status: WaitingStatus): void => {
+      if (!this.isCurrentAgent(agent)) {
+        return;
+      }
+
       // Re-issue the version from the single per-project counter. Underlying
       // agents emit versions from their own counters, which can collide.
       const version = this.nextWaitingVersion(projectId);
@@ -1679,14 +1771,23 @@ export class DefaultAgentManager implements AgentManager {
     };
 
     const exitPlanModeListener = (planContent: string): void => {
+      if (!this.isCurrentAgent(agent)) {
+        return;
+      }
       void this.handleExitPlanMode(agent, planContent);
     };
 
     const enterPlanModeListener = (): void => {
+      if (!this.isCurrentAgent(agent)) {
+        return;
+      }
       void this.handleEnterPlanMode(agent);
     };
 
     const contextUsageListener = (usage: ContextUsage): void => {
+      if (!this.isCurrentAgent(agent)) {
+        return;
+      }
       this.emit('contextUsage', projectId, usage);
     };
 
@@ -1698,15 +1799,68 @@ export class DefaultAgentManager implements AgentManager {
     agent.on('sessionNotFound', sessionNotFoundListener);
     agent.on('exitPlanMode', exitPlanModeListener);
     agent.on('enterPlanMode', enterPlanModeListener);
+
+    // Every listener above closes over this agent instance and stays attached to
+    // it. handleAgentExit() only removed the agent from the map, so a replaced
+    // agent kept mutating project-level state (status, waiting version, plan
+    // lock) long after its process was gone. Detaching on exit is what actually
+    // ends its influence; the guards above cover events already in flight.
+    this.agentTeardowns.set(agent, () => {
+      agent.off('message', messageListener);
+      agent.off('status', statusListener);
+      agent.off('waitingForInput', waitingListener);
+      agent.off('contextUsage', contextUsageListener);
+      agent.off('exit', exitListener);
+      agent.off('sessionNotFound', sessionNotFoundListener);
+      agent.off('exitPlanMode', exitPlanModeListener);
+      agent.off('enterPlanMode', enterPlanModeListener);
+    });
+  }
+
+  /**
+   * Is this agent still the one that owns its project?
+   *
+   * A project has exactly one current agent. Anything reported by a previous
+   * instance describes a process that no longer represents the project, so acting
+   * on it corrupts live state — that is how a dead agent's 'error' outlived the
+   * replacement that was already running.
+   */
+  private isCurrentAgent(agent: Agent): boolean {
+    return this.agents.get(agent.projectId) === agent;
+  }
+
+  private teardownAgentListeners(agent: Agent): void {
+    const teardown = this.agentTeardowns.get(agent);
+
+    if (teardown) {
+      teardown();
+      this.agentTeardowns.delete(agent);
+    }
   }
 
   private async handleAgentExit(agent: Agent, _code: number | null): Promise<void> {
     const projectId = agent.projectId;
 
+    // Only tear down if this agent still owns the project. A late exit from an
+    // already-replaced agent must not detach the live agent's listeners.
+    const wasCurrent = this.isCurrentAgent(agent);
+
     // Clean up agent
-    this.agents.delete(projectId);
-    this.processTracker.untrackProcess(projectId);
-    this.waitingVersions.delete(projectId);
+    if (wasCurrent) {
+      this.agents.delete(projectId);
+      this.processTracker.untrackProcess(projectId);
+      this.waitingVersions.delete(projectId);
+    }
+
+    this.teardownAgentListeners(agent);
+
+    // No process is running now, so the stored status must not stay 'error' or
+    // 'running'. Leaving it was what made a project read as failed on every fresh
+    // page load while it was in fact working. The reason for the failure lives in
+    // the persisted 'system' message, not in this flag.
+    if (wasCurrent) {
+      await this.syncPersistedStatus(projectId);
+    }
 
     // A session-recovery exit is expected, not a failure: restart on the
     // recovered session now that the slot is free.
@@ -1743,25 +1897,49 @@ export class DefaultAgentManager implements AgentManager {
     void this.processQueue();
   }
 
-  private async handleStatusChange(projectId: string, status: AgentStatus): Promise<void> {
+  private async handleStatusChange(agent: Agent, status: AgentStatus): Promise<void> {
+    const projectId = agent.projectId;
+
     this.emit('status', projectId, status);
 
-    // Update project status
+    if (!this.isCurrentAgent(agent)) {
+      this.logger.info('Ignoring status from a replaced agent', { projectId, status });
+      return;
+    }
+
+    await this.syncPersistedStatus(projectId);
+  }
+
+  /**
+   * Write the project's status from the agent that currently owns it.
+   *
+   * Derived, never taken from the event that triggered the call. The old version
+   * persisted whatever status was reported, so the write order decided the stored
+   * value: a dying agent's 'error' landing after its replacement's 'running' left
+   * status.json saying "error" while the project was working normally, and nothing
+   * corrected it because a live agent only emits on *change*. Deriving from the
+   * current owner makes the result independent of ordering — and repeating the call
+   * is always safe.
+   */
+  private async syncPersistedStatus(projectId: string): Promise<void> {
+    const agent = this.agents.get(projectId);
+    const live: AgentStatus = agent ? agent.status : 'stopped';
+
+    let projectStatus: ProjectStatus['status'];
+    if (live === 'running') {
+      projectStatus = 'running';
+    } else if (live === 'error') {
+      projectStatus = 'error';
+    } else {
+      projectStatus = 'stopped';
+    }
+
     try {
-      // Map agent status to project status
-      let projectStatus: ProjectStatus['status'];
-      if (status === 'running') {
-        projectStatus = 'running';
-      } else if (status === 'error') {
-        projectStatus = 'error';
-      } else {
-        projectStatus = 'stopped';
-      }
       await this.projectRepository.updateStatus(projectId, projectStatus);
     } catch (error) {
       this.logger.error('Failed to update project agent status', {
         projectId,
-        status,
+        status: projectStatus,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
@@ -1923,6 +2101,17 @@ export class DefaultAgentManager implements AgentManager {
     } else {
       // User wants changes - send their feedback to Claude
       this.logger.info('User requested plan changes', { projectId });
+
+      // This branch carries the user's own words — both "request changes" and any
+      // message typed while a plan was pending land here. It bypasses sendInput(),
+      // so without this the text reached Claude but was never written to the
+      // conversation: it showed up via the browser's optimistic append and then
+      // disappeared on reload, leaving Claude's reply with no visible prompt.
+      //
+      // 'yes' and 'no' above are synthetic values from the plan card's buttons,
+      // not prose, and the approve path already records its own system message —
+      // so only this branch persists.
+      this.persistUserMessage(projectId, response);
 
       // Send the feedback to Claude
       const agent = this.agents.get(projectId);

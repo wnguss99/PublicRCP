@@ -173,15 +173,19 @@
     }
   }
 
-  // This used to enable the input unconditionally, which made the UI contradict
-  // the server: it is called on every agent_status message, so it re-enabled the
-  // composer while a plan/question/permission prompt was still blocking, and the
-  // send then came back 400. Respect the active prompt instead.
+  // Re-asserts a usable composer; it cannot disable one.
+  //
+  // History: this once enabled the input unconditionally, which contradicted the
+  // server (it runs on every agent_status, so it re-enabled the composer while a
+  // prompt was pending and the send came back 400). The fix made it disable the
+  // input from state.activePromptType instead — which removed the only thing
+  // recovering a leaked prompt lock, so a stuck lock became permanent. Both
+  // versions were wrong because two writers were guessing at the same property.
+  //
+  // Neither is possible now: ComposerGate.apply() only ever enables, and being
+  // called on every agent_status makes this a repair pass rather than a decision.
   function updateInputArea() {
-    var blocked = state.activePromptType !== null && state.activePromptType !== undefined;
-
-    $('#input-message').prop('disabled', blocked);
-    $('#btn-send-message').prop('disabled', blocked);
+    ComposerGate.apply();
     updateInputHint();
   }
 
@@ -216,6 +220,8 @@
       var project = findProjectById(state.selectedProjectId);
       var isAgentRunning = project && project.status === 'running';
 
+      ComposerGate.release('ralph');
+
       if (isAgentRunning) {
         updateStartStopButtons();
         updateInputArea();
@@ -223,9 +229,7 @@
         showAgentRunningIndicator(false);
         $('#btn-stop-agent').addClass('hidden');
         $('#btn-restart-agent').addClass('hidden');
-        $('#form-send-message').removeClass('opacity-50');
-        $('#input-message').prop('disabled', false);
-        $('#btn-send-message').prop('disabled', false);
+        ComposerGate.apply();
 
         if (state.selectedProjectId) {
           updateProjectStatusById(state.selectedProjectId, 'stopped');
@@ -247,9 +251,18 @@
         $('#btn-ralph-loop-pause').addClass('hidden');
       }
 
-      $('#form-send-message').addClass('opacity-50');
-      $('#input-message').prop('disabled', true);
-      $('#btn-send-message').prop('disabled', true);
+      // Renewed on every Ralph status update, so freshness is the liveness test:
+      // if the loop's events stop arriving (socket drop, crashed loop) the
+      // tracked operation expires and state.isRalphLoopRunning is cleared, rather
+      // than blocking agent starts forever. The composer stays usable regardless —
+      // the loop no longer takes the input away.
+      ComposerGate.hold('ralph', {
+        ttlMs: ComposerGate.TTL.RALPH,
+        isLive: function() {
+          return state.isRalphLoopRunning === true;
+        },
+        projectId: state.selectedProjectId
+      });
       state.isRalphLoopRunning = true;
 
       updateProjectStatusById(state.selectedProjectId, 'running');

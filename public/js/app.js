@@ -54,6 +54,8 @@
     },
     websocket: null,
     wsConnected: false, // Track WebSocket connection state
+    wsHasConnected: false, // True once connected at least once, so onopen can tell a reconnect from the first connect
+    backfill: { inFlight: false, pendingProjectId: null }, // Coalesces post-reconnect history reloads
     clientId: clientId, // Add clientId for multi-client debugging
     resourceStatus: {
       runningCount: 0,
@@ -68,6 +70,7 @@
     debugPanelOpen: false,
     debugRefreshInterval: null,
     agentStatusInterval: null, // Polling interval for agent status
+    agentReconcileInterval: null, // Slow poll that keeps a non-running project's status honest
     roadmapGenerating: false,
     agentOutputScrollLock: false,
     fontSize: 14, // Font size for Claude output (10-24px)
@@ -1033,7 +1036,7 @@
     // The server's hasPendingPlan is the authority.
     if (pendingType === 'plan_mode' && state.hasPendingPlan === false) return;
 
-    setPromptBlockingState(pendingType);
+    setPromptHintState(pendingType);
 
     if (pendingType === 'plan_mode') {
       var $planContainer = $('.plan-content-container').last();
@@ -1185,17 +1188,29 @@
       && message.content.indexOf('Session ID:') === 0;
   }
 
+  // Defined in utils.js (loaded before this file) so it can be unit tested; see the
+  // note there for why the key is not just timestamp + type.
+  var messageIdentity = Utils.messageIdentity;
+
   function appendMessage(projectId, message) {
     if (!state.conversations[projectId]) {
       state.conversations[projectId] = [];
     }
 
-    // Deduplicate: skip if any recent message has the same timestamp and type
-    // (can happen when loadConversationHistory races with a WebSocket agent_message)
+    // Deduplicate: skip a message we already have (loadConversationHistory can
+    // race with a WebSocket agent_message).
+    //
+    // The key used to be just timestamp + type. Timestamps are millisecond
+    // precision, so two *different* messages of the same type produced in the same
+    // millisecond — routine when Claude issues parallel tool calls — collided and
+    // the second was silently dropped from the view while the server had saved
+    // both. The output reappeared on refresh, which is indistinguishable from the
+    // agent having stalled. Identity now includes the tool id or the content, so
+    // only a genuine re-delivery is discarded.
     if (message.timestamp && message.type) {
       var conv = state.conversations[projectId];
-      var key = message.timestamp + ':' + message.type;
-      var recentKeys = conv.slice(-20).map(function(m) { return m.timestamp + ':' + m.type; });
+      var key = messageIdentity(message);
+      var recentKeys = conv.slice(-20).map(messageIdentity);
       if (recentKeys.indexOf(key) !== -1) {
         return;
       }
@@ -1236,10 +1251,10 @@
         }
       }
 
-      // Block input when AskUserQuestion tool is waiting for response
-      if (toolInfo.name === 'AskUserQuestion' && toolInfo.status !== 'completed') {
-        setPromptBlockingState('askuser');
-      }
+      // NOTE: AskUserQuestion blocking is armed further down, inside the
+      // selected-project branch. Arming it here disabled the composer of the
+      // project the user was looking at because a *different* project asked a
+      // question — a card that is not even on screen to answer.
     }
 
     if (state.selectedProjectId === projectId) {
@@ -1312,24 +1327,32 @@
 
       // Block input when interactive prompts appear
       if (message.type === 'question' || message.type === 'permission') {
-        setPromptBlockingState(message.type);
+        setPromptHintState(message.type);
+      }
+
+      // Live AskUserQuestion for the project on screen — the card was just
+      // rendered above, so there is something to answer.
+      if (message.type === 'tool_use' && message.toolInfo &&
+          message.toolInfo.name === 'AskUserQuestion' &&
+          message.toolInfo.status !== 'completed') {
+        setPromptHintState('askuser');
       }
 
       if (message.type === 'plan_mode' && message.planModeInfo && message.planModeInfo.action === 'exit') {
-        setPromptBlockingState('plan_mode');
+        setPromptHintState('plan_mode');
         state.lastPlanContent = message.planModeInfo.planContent || '';
       }
 
       // Block input during compaction
       if (message.type === 'status_change' && message.statusChangeInfo) {
         if (message.statusChangeInfo.status === 'compacting') {
-          setPromptBlockingState('compacting');
+          setPromptHintState('compacting');
         }
       }
 
       // Unblock input after compaction completes (compaction message follows status_change)
       if (message.type === 'compaction' && state.activePromptType === 'compacting') {
-        setPromptBlockingState(null);
+        setPromptHintState(null);
       }
 
       // Refresh the pinned last-request bar when the user sends a message
@@ -2242,6 +2265,16 @@
       }
     }
 
+    // A pending prompt owns the placeholder. This runs on every agent_status and
+    // used to overwrite the prompt text immediately; that did not matter while
+    // the composer was disabled, but the placeholder is now the only signal that
+    // something is waiting for an answer.
+    var promptText = promptPlaceholderText(state.activePromptType);
+
+    if (promptText) {
+      $('#input-message').attr('placeholder', promptText);
+    }
+
     // Update image hint with attach link
     var attachLink = '<a href="#" id="btn-attach-image" class="text-purple-400 hover:text-purple-300">attach</a>';
 
@@ -2250,6 +2283,23 @@
     } else {
       $('#input-hint-image').html('• Paste images with Ctrl+V or ' + attachLink);
     }
+  }
+
+  /**
+   * Placeholder for a prompt awaiting an answer, or null when none is pending.
+   *
+   * Both wordings deliberately say the input still works: every prompt type
+   * accepts a typed reply, so "please respond above" would be misleading now
+   * that the composer is never taken away.
+   */
+  function promptPlaceholderText(promptType) {
+    if (!promptType) return null;
+
+    if (promptType === 'compacting') {
+      return 'Compacting context — you can still type...';
+    }
+
+    return 'Answer above, or just type your reply...';
   }
 
   function updateChromeToggleButton() {
@@ -3022,7 +3072,7 @@
 
       // Clear prompt blocking
       state.justAnsweredQuestion = true;
-      setPromptBlockingState(null);
+      setPromptHintState(null);
       setTimeout(function() {
         state.justAnsweredQuestion = false;
       }, 100);
@@ -3041,7 +3091,7 @@
       if (optionIndex === -1) {
         // "Other" option - clear blocking and focus the input
         state.justAnsweredQuestion = true;
-        setPromptBlockingState(null);
+        setPromptHintState(null);
         // Clear any pending message for "Other" option
         state.pendingMessageBeforeQuestion = null;
         $('#input-message').focus();
@@ -3056,7 +3106,7 @@
 
       // Clear prompt blocking (but don't restore pending message immediately)
       state.justAnsweredQuestion = true;
-      setPromptBlockingState(null);
+      setPromptHintState(null);
       // Reset the flag after a short delay to allow restoring messages later
       setTimeout(function() {
         state.justAnsweredQuestion = false;
@@ -3148,7 +3198,7 @@
       $actions.find('button').prop('disabled', true).addClass('opacity-50 cursor-not-allowed');
 
       // Clear prompt blocking
-      setPromptBlockingState(null);
+      setPromptHintState(null);
 
       var project = findProjectById(state.selectedProjectId);
 
@@ -3168,7 +3218,7 @@
       $actions.find('button').prop('disabled', true).addClass('opacity-50 cursor-not-allowed');
 
       // Clear prompt blocking
-      setPromptBlockingState(null);
+      setPromptHintState(null);
 
       var project = findProjectById(state.selectedProjectId);
 
@@ -3188,7 +3238,7 @@
       $actions.find('button').prop('disabled', true).addClass('opacity-50 cursor-not-allowed');
 
       // Clear prompt blocking so user can type feedback
-      setPromptBlockingState(null);
+      setPromptHintState(null);
 
       // Mark next send as plan feedback so the server accepts it
       state.planFeedbackPending = true;
@@ -3353,6 +3403,18 @@
     if (state.selectedProjectId) {
       api.answerAgentQuestion(state.selectedProjectId, toolId, answers)
         .fail(function(xhr) {
+          // The card was disabled and the tool id marked as submitted before the
+          // request went out, so a failure left the question unanswerable and
+          // unresendable. Put it back so the user can retry.
+          state.submittedQuestionToolIds[toolId] = false;
+          $('.ask-user-question[data-tool-id="' + toolId + '"]').each(function() {
+            $(this).find('.ask-user-option')
+              .prop('disabled', false)
+              .removeClass('opacity-50 cursor-not-allowed');
+            $(this).find('.ask-user-submit')
+              .prop('disabled', false)
+              .removeClass('opacity-50');
+          });
           showErrorToast(xhr, 'Failed to send answer');
         });
     }
@@ -3372,7 +3434,7 @@
 
   function clearBlockingAfterAnswer() {
     state.justAnsweredQuestion = true;
-    setPromptBlockingState(null);
+    setPromptHintState(null);
 
     // Send any deferred plan message now that the question is answered
     if (state.deferredPlanMessage) {
@@ -3433,7 +3495,7 @@
     state.currentSessionId = null;
 
     // Clear any prompt blocking
-    setPromptBlockingState(null);
+    setPromptHintState(null);
 
     function clearAndRestart() {
       // Clear current conversation on server
@@ -3567,49 +3629,105 @@
 
   // Permission mode functions are now in PermissionModeModule
 
-  function setPromptBlockingState(promptType) {
-    state.activePromptType = promptType;
-    var isBlocked = promptType !== null;
+  /**
+   * Start the composer watchdog and give it the facts it needs.
+   *
+   * Everything here exists so that a disabled composer is always temporary:
+   * - onLockReaped clears the matching flag. A stuck state.messageSending makes
+   *   sendMessage() return silently, so the app would ignore the user with no
+   *   visible reason — the invisible twin of the dead-input bug.
+   *
+   * There is no unlock button and no user-facing recovery step: the composer is
+   * never disabled, so there is nothing for the user to undo.
+   *
+   * Deliberately no global $.ajaxSetup timeout either — a request that never
+   * settles is already covered by each operation's TTL, whereas a blanket
+   * timeout would abort legitimately slow calls (repo clone, docker image pull,
+   * one-off agents).
+   */
+  function initComposerGate() {
+    ComposerGate.init({
+      getSelectedProjectId: function() {
+        return state.selectedProjectId;
+      },
+      onLockReaped: function(reason, why) {
+        if (reason === 'sending') state.messageSending = false;
+        if (reason === 'starting') state.agentStarting = false;
+        if (reason === 'ralph') state.isRalphLoopRunning = false;
+        if (reason === 'modeSwitch') state.isModeSwitching = false;
+        if (reason === 'prompt') setPromptHintState(null);
 
-    // Disable input and send button when prompt is active
-    var $inputMsg = $('#input-message');
-    $inputMsg.prop('disabled', isBlocked);
-    $('#btn-send-message').prop('disabled', isBlocked);
-    // Re-apply inputmode=none after disabled toggle on mobile (disabled clears attributes)
-    if (!isBlocked && $inputMsg.attr('inputmode') === undefined && state.messageSending) {
-      var isMobile = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-      if (isMobile) $inputMsg.attr('inputmode', 'none');
+        logFrontendError('Stale composer operation retired: ' + reason + ' (' + why + ')',
+          'composer-gate', null, null, null, 'composer_lock_reaped');
+      }
+    });
+  }
+
+  /** Delegates to the gate, which owns the "something to click" rule. */
+  function hasAnswerableControl(promptType) {
+    return ComposerGate.hasAnswerableControl(promptType);
+  }
+
+  /**
+   * 'compacting' has no card to click, so it cannot use the DOM test. It is
+   * bounded by its TTL and by the agent still running: a compaction that fails
+   * or a process that dies must not leave the composer locked.
+   */
+  function isCompactingLive() {
+    var project = findProjectById(state.selectedProjectId);
+    return !!(project && project.status === 'running');
+  }
+
+  function promptLockOptions(promptType) {
+    if (promptType === 'compacting') {
+      return { isLive: isCompactingLive, ttlMs: ComposerGate.TTL.COMPACTING };
     }
 
-    if (isBlocked) {
-      var placeholder = promptType === 'compacting'
-        ? 'Compacting context, please wait...'
-        : 'Please respond to the prompt above...';
-      $('#input-message').attr('placeholder', placeholder);
-      $('#form-send-message').addClass('opacity-50');
+    return {
+      isLive: function() {
+        var project = findProjectById(state.selectedProjectId);
+        if (!project || project.status !== 'running') return false;
+        return hasAnswerableControl(promptType);
+      },
+      ttlMs: ComposerGate.TTL.PROMPT
+    };
+  }
 
-      // Clear any pending text when Claude asks a question
-      // This ensures queued messages don't get sent after the question is answered
-      if (promptType === 'question') {
-        state.pendingMessageBeforeQuestion = $('#input-message').val();
-        $('#input-message').val('');
-      }
+  /**
+   * Record that a prompt is waiting for the user, and say so in the placeholder.
+   *
+   * Was setPromptBlockingState(), and it no longer blocks anything: the composer
+   * stays fully usable while a prompt is on screen. Answering by typing is
+   * always valid — every prompt type accepts a typed reply — so taking the input
+   * away only ever created dead ends when the prompt was resolved some other way.
+   *
+   * The tracked 'prompt' operation exists purely so state.activePromptType and
+   * this hint cannot get stuck: the watchdog retires it as soon as there is no
+   * answerable card left.
+   */
+  function setPromptHintState(promptType) {
+    state.activePromptType = promptType;
+    var isPending = promptType !== null;
+
+    if (isPending) {
+      ComposerGate.hold('prompt', promptLockOptions(promptType));
+    } else {
+      ComposerGate.release('prompt');
+    }
+
+    if (isPending) {
+      $('#input-message').attr('placeholder', promptPlaceholderText(promptType));
     } else {
       $('#input-message').attr('placeholder', 'Type a message to Claude...');
-      $('#form-send-message').removeClass('opacity-50');
 
-      // Restore the pending message if it was cleared due to a question
-      // But only if the input is currently empty (user hasn't typed anything new)
-      // And only if we didn't just answer a question (to prevent automatic sending)
+      // Kept for conversations that still carry a stashed draft from the old
+      // behaviour; nothing stashes one any more.
       if (state.pendingMessageBeforeQuestion && $('#input-message').val() === '' && !state.justAnsweredQuestion) {
         $('#input-message').val(state.pendingMessageBeforeQuestion);
-        state.pendingMessageBeforeQuestion = null;
-      } else if (state.justAnsweredQuestion) {
-        // Clear the pending message if we just answered a question
-        state.pendingMessageBeforeQuestion = null;
       }
+      state.pendingMessageBeforeQuestion = null;
 
-      // Replay any deferred plan message now that blocking is cleared
+      // Replay any deferred plan message now that the prompt is resolved
       if (state.deferredPlanMessage) {
         var planMsg = state.deferredPlanMessage;
         state.deferredPlanMessage = null;
@@ -3621,11 +3739,11 @@
   /**
    * Keep the composer in agreement with what the server will actually accept.
    *
-   * The plan lock lives on the server (agentManager.pendingPlans) and is now
-   * reported as `hasPendingPlan`. Before this existed the two could disagree in
-   * both directions: the UI showed an enabled input the send route rejected with
-   * 400, or kept the input disabled long after the plan had been resolved
-   * through the CLI's own permission modal.
+   * The plan gate lives on the server (agentManager.pendingPlans) and is
+   * reported as `hasPendingPlan`. It decides whether a send is *accepted* — it
+   * never decides whether the user may type. A send rejected by the gate renders
+   * an answerable recovery card (showPlanRecoveryCard), which is the only
+   * resolution path that cannot dead-end.
    */
   function syncPlanBlockingState(projectId, fullStatus) {
     if (!fullStatus || typeof fullStatus.hasPendingPlan !== 'boolean') return;
@@ -3635,15 +3753,19 @@
 
     if (!fullStatus.hasPendingPlan) {
       if (state.activePromptType === 'plan_mode') {
-        setPromptBlockingState(null);
+        setPromptHintState(null);
       }
       // The card's buttons would post to a plan that no longer exists.
       $('.plan-mode-actions button').prop('disabled', true).addClass('opacity-50 cursor-not-allowed');
       return;
     }
 
-    if (state.activePromptType === null && fullStatus.status === 'running') {
-      setPromptBlockingState('plan_mode');
+    // Only re-arm the hint while the user actually has a card to click, so a
+    // poll arriving just after the approve click cannot resurrect a prompt whose
+    // buttons are already spent.
+    if (state.activePromptType === null && fullStatus.status === 'running' &&
+        hasAnswerableControl('plan_mode')) {
+      setPromptHintState('plan_mode');
     }
   }
 
@@ -3705,14 +3827,34 @@
       $input.blur();
     }
 
-    // All messages (including slash commands) are sent to Claude agent
-    if (state.messageSending || state.agentStarting) return;
+    // The composer is never disabled, so these collisions have to be refused
+    // here instead — and refused *out loud*. A silent return is how a stuck flag
+    // turns into "the app ignores me", which is the failure mode users cannot
+    // diagnose. Every flag below is retired by ComposerGate if it goes stale, so
+    // none of these can become permanent.
+    if (state.messageSending || state.agentStarting) {
+      showToast('이전 메시지를 보내는 중입니다. 잠시만 기다려주세요.', 'info');
+      return;
+    }
 
-    if (!state.selectedProjectId) return;
+    if (state.isModeSwitching) {
+      showToast('권한 모드 전환 중입니다. 전환이 끝나면 다시 보내주세요.', 'info');
+      return;
+    }
+
+    // Silent returns are how "the app ignores me" happens. Anything that refuses
+    // to send has to say so.
+    if (!state.selectedProjectId) {
+      showToast('먼저 프로젝트를 선택해주세요.', 'warning');
+      return;
+    }
 
     var project = findProjectById(state.selectedProjectId);
 
-    if (!project) return;
+    if (!project) {
+      showToast('선택된 프로젝트를 찾을 수 없습니다. 목록에서 다시 선택해주세요.', 'error');
+      return;
+    }
 
     // If agent is not running, start it first (always interactive mode)
     if (project.status !== 'running') {
@@ -3729,7 +3871,15 @@
 
   // formatNumber is already defined above using Formatters.formatNumberCompact
 
-  function doSendMessage(message) {
+  /**
+   * @param {string} message
+   * @param {boolean} [fromRecovery] this call is the second half of a handoff
+   *   between sending and starting. It means the message is already on screen, and
+   *   that no further handoff may be attempted — the two recoveries are exact
+   *   opposites, so a server flapping between states would otherwise bounce the
+   *   same message back and forth forever.
+   */
+  function doSendMessage(message, fromRecovery) {
     if (state.messageSending) return;
 
     var $input = $('#input-message');
@@ -3749,8 +3899,6 @@
 
     // Disable input while sending
     var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    $input.prop('disabled', true);
-    $('#btn-send-message').prop('disabled', true);
 
     // Build user message with images
     var userMessage = {
@@ -3766,32 +3914,57 @@
     }
 
     // Add user message to conversation
-    appendMessage(state.selectedProjectId, userMessage);
+    if (!fromRecovery) {
+      appendMessage(state.selectedProjectId, userMessage);
+    }
 
     updateCancelButton();
 
     var isPlanFeedback = state.planFeedbackPending;
     state.planFeedbackPending = false;
 
-    api.sendAgentMessage(state.selectedProjectId, message, images, isPlanFeedback)
+    var jqXHR = api.sendAgentMessage(state.selectedProjectId, message, images, isPlanFeedback);
+
+    // The lock lives exactly as long as the request does. A request that never
+    // settles (dropped tunnel, sleeping phone) is caught by the TTL instead of
+    // parking the composer forever, and state.messageSending is released with it
+    // so sendMessage() cannot start silently refusing either.
+    ComposerGate.hold('sending', {
+      isLive: function() {
+        return jqXHR.state ? jqXHR.state() === 'pending' : false;
+      },
+      ttlMs: ComposerGate.TTL.SENDING,
+      projectId: state.selectedProjectId
+    });
+
+    jqXHR
       .done(function() {
         $input.val('').trigger('input');
         ImageAttachmentModule.clearAll();
       })
       .fail(function(xhr) {
-        // The server still holds a live plan gate. Converge on its view instead
-        // of re-enabling an input whose next send would be rejected too.
-        if (xhr.responseJSON && xhr.responseJSON.code === 'PLAN_APPROVAL_PENDING') {
-          state.hasPendingPlan = true;
-          setPromptBlockingState('plan_mode');
+        var code = xhr.responseJSON && xhr.responseJSON.code;
+
+        // The server says nothing is running, so this project's status was a
+        // stale belief. Start the agent with the same message rather than making
+        // the user read an error and press send again — the message is already
+        // in hand and the intent is unambiguous.
+        if (code === 'AGENT_NOT_RUNNING' && !fromRecovery) {
+          updateProjectStatusById(state.selectedProjectId, 'stopped');
+          // The bubble is already on screen from the optimistic append above, so
+          // the start path must not echo it a second time — and must not hand it
+          // back here if it in turn finds an agent already running.
+          startInteractiveAgentWithMessage(message, null, true);
+          return;
         }
+
+        // The text is deliberately left in the composer on failure — clearing it
+        // would destroy what the user wrote. Only .done() clears.
         showErrorToast(xhr, 'Failed to send message');
       })
       .always(function() {
         state.messageSending = false;
-        // Respects the active prompt — an unconditional enable here would undo
-        // the plan block set above.
-        updateInputArea();
+        ComposerGate.release('sending');
         if (isTouchDevice) {
           $input.attr('inputmode', 'none');
         } else if (!$input.prop('disabled')) {
@@ -3800,8 +3973,24 @@
       });
   }
 
-  function startInteractiveAgentWithMessage(message, permissionModeOverride) {
-    if (state.agentStarting) return;
+  // showPlanRecoveryCard() lived here. It repaired the plan card after the server
+  // rejected a send with PLAN_APPROVAL_PENDING — a rejection the server no longer
+  // issues, because a pending plan now consumes the user's message instead of
+  // refusing it. Removed rather than kept "just in case": code no path reaches is
+  // code no test covers.
+
+  /**
+   * @param {string} message
+   * @param {string|null} permissionModeOverride
+   * @param {boolean} [fromRecovery] this call is the second half of a handoff from
+   *   doSendMessage(). The message is already on screen, so it must not be echoed
+   *   again, and no further handoff may be attempted.
+   */
+  function startInteractiveAgentWithMessage(message, permissionModeOverride, fromRecovery) {
+    if (state.agentStarting) {
+      showToast('에이전트를 시작하는 중입니다. 잠시만 기다려주세요.', 'info');
+      return;
+    }
 
     // Don't start agent if Ralph Loop is running
     if (state.isRalphLoopRunning) {
@@ -3830,12 +4019,22 @@
 
     // Disable input while starting
     var isTouchDevice = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    $input.prop('disabled', true);
-    $('#btn-send-message').prop('disabled', true);
     showContentLoading(sessionId ? 'Resuming session...' : 'Starting agent...');
 
     var permissionMode = permissionModeOverride || state.permissionMode;
-    api.startInteractiveAgent(projectId, message, images, sessionId, permissionMode)
+    var startXHR = api.startInteractiveAgent(projectId, message, images, sessionId, permissionMode);
+
+    // Tagged with the project: switching away releases it, so the old
+    // same-project guard in .always() can no longer leave a project locked.
+    ComposerGate.hold('starting', {
+      isLive: function() {
+        return startXHR.state ? startXHR.state() === 'pending' : false;
+      },
+      ttlMs: ComposerGate.TTL.STARTING,
+      projectId: projectId
+    });
+
+    startXHR
       .done(function(response) {
         state.currentAgentMode = 'interactive';
         updateProjectStatusById(projectId, 'running');
@@ -3856,21 +4055,23 @@
           state.currentConversationId = response.conversationId;
         }
 
-        // Build user message with images
-        var userMessage = {
-          type: 'user',
-          content: message,
-          timestamp: new Date().toISOString()
-        };
+        if (!fromRecovery) {
+          // Build user message with images
+          var userMessage = {
+            type: 'user',
+            content: message,
+            timestamp: new Date().toISOString()
+          };
 
-        if (images.length > 0) {
-          userMessage.images = images.map(function(img) {
-            return { dataUrl: img.dataUrl, mimeType: img.mimeType };
-          });
+          if (images.length > 0) {
+            userMessage.images = images.map(function(img) {
+              return { dataUrl: img.dataUrl, mimeType: img.mimeType };
+            });
+          }
+
+          // Add user message to conversation
+          appendMessage(projectId, userMessage);
         }
-
-        // Add user message to conversation
-        appendMessage(projectId, userMessage);
 
         // Clear input and images
         $input.val('').trigger('input');
@@ -3879,6 +4080,20 @@
         updateCancelButton();
       })
       .fail(function(xhr) {
+        var code = xhr.responseJSON && xhr.responseJSON.code;
+
+        // An agent is already up, so this project's status was a stale belief in
+        // the other direction. Deliver the message to the running agent instead
+        // of discarding it and showing an error the user can only answer by
+        // retyping. Mirrors the AGENT_NOT_RUNNING recovery in doSendMessage().
+        if (code === 'AGENT_ALREADY_RUNNING' && !fromRecovery) {
+          updateProjectStatusById(projectId, 'running');
+          state.agentStarting = false;
+          ComposerGate.release('starting');
+          doSendMessage(message, true);
+          return;
+        }
+
         if (xhr.status === 409 && xhr.responseJSON && xhr.responseJSON.code === 'CONFLICT' && xhr.responseJSON.error && xhr.responseJSON.error.includes('limit')) {
           showToast(xhr.responseJSON.error, 'warning');
         } else {
@@ -3887,14 +4102,15 @@
       })
       .always(function() {
         state.agentStarting = false;
-        // Only hide loading and re-enable inputs if still viewing the same project
+        // Released unconditionally — the lock is the composer's, not this view's,
+        // so it must not survive just because the user changed project mid-start.
+        ComposerGate.release('starting');
+
         if (state.selectedProjectId === projectId) {
           hideContentLoading();
-          $input.prop('disabled', false);
-          $('#btn-send-message').prop('disabled', false);
           if (isTouchDevice) {
             $input.attr('inputmode', 'none');
-          } else {
+          } else if (!$input.prop('disabled')) {
             $input.focus();
           }
         }
@@ -4122,7 +4338,9 @@
     var savedInput = state.projectInputs[projectId] || '';
     $('#input-message').val(savedInput).trigger('input');
     state.currentAgentMode = null; // Reset on project change
-    setPromptBlockingState(null); // Clear any prompt blocking on project change
+    setPromptHintState(null); // Clear any prompt hint on project change
+    // Nothing held for the project we just left can be answered on this screen.
+    ComposerGate.releaseAll('project changed');
     var project = findProjectById(projectId);
 
     // Store current project with full data including path
@@ -4603,8 +4821,40 @@
     showToast(message, 'warning');
   }
 
+  /**
+   * Reload history after the socket came back, without letting a flapping
+   * connection turn into a pile of overlapping requests.
+   *
+   * A phone can reconnect several times in a few seconds, and a conversation holds
+   * up to 1000 messages, so firing a full load per reconnect would put real weight
+   * on the server for all three users at once. Skipping reconnects instead would
+   * reintroduce the gap this exists to close, so the loads are *coalesced*: at most
+   * one in flight, and if reconnects happened while it ran, exactly one more
+   * follows. Correctness kept, concurrency bounded at one.
+   */
+  function backfillAfterReconnect(projectId) {
+    if (!projectId) return;
+
+    if (state.backfill.inFlight) {
+      state.backfill.pendingProjectId = projectId;
+      return;
+    }
+
+    state.backfill.inFlight = true;
+
+    loadConversationHistory(projectId).always(function() {
+      state.backfill.inFlight = false;
+      var pending = state.backfill.pendingProjectId;
+      state.backfill.pendingProjectId = null;
+
+      if (pending) {
+        backfillAfterReconnect(pending);
+      }
+    });
+  }
+
   function loadConversationHistory(projectId) {
-    $.get('/api/projects/' + projectId + '/conversation')
+    return $.get('/api/projects/' + projectId + '/conversation')
       .done(function(data) {
         state.conversations[projectId] = data.messages || [];
         state.currentConversationStats = data.stats || null;
@@ -5171,11 +5421,41 @@
     }, 10000);
   }
 
+  /**
+   * Stops the fast poll but keeps a slow reconcile running for the selected
+   * project.
+   *
+   * Polling used to stop outright whenever the UI believed the agent was not
+   * running, which made a single missed `agent_status` frame permanent: the badge
+   * stayed on Error and nothing ever asked again. On a phone the WebSocket drops
+   * constantly, and the only way out was switching project and back — which is
+   * exactly what re-subscribing did. The slow poll makes the UI converge on its
+   * own instead.
+   */
   function stopAgentStatusPolling() {
     if (state.agentStatusInterval) {
       clearInterval(state.agentStatusInterval);
       state.agentStatusInterval = null;
     }
+
+    if (state.agentReconcileInterval) {
+      clearInterval(state.agentReconcileInterval);
+      state.agentReconcileInterval = null;
+    }
+
+    var projectId = state.selectedProjectId;
+    if (!projectId) return;
+
+    state.agentReconcileInterval = setInterval(function() {
+      // Give up as soon as the fast poll takes over again, or the user moves on.
+      if (state.agentStatusInterval || state.selectedProjectId !== projectId) {
+        clearInterval(state.agentReconcileInterval);
+        state.agentReconcileInterval = null;
+        return;
+      }
+
+      checkAgentStatus(projectId);
+    }, 30000);
   }
 
   function checkAgentStatus(projectId) {
@@ -5817,13 +6097,25 @@
 
     state.websocket.onopen = function() {
       console.log('WebSocket connected');
+      var wasReconnect = state.wsHasConnected === true;
       state.wsConnected = true; // Track connection state
+      state.wsHasConnected = true;
       state.wsReconnect.attempts = 0;
       updateConnectionStatus('connected');
 
       // Re-subscribe to current project if any
       if (state.selectedProjectId) {
         subscribeToProject(state.selectedProjectId);
+
+        // Re-subscribing only restores the *stream*; everything that happened
+        // while the socket was down was never delivered and is not replayed. The
+        // reply to the last message could be sitting on the server while the chat
+        // looks frozen — which is why switching project and back "fixed" it: that
+        // path reloads history. Do it here instead of making the user find out.
+        if (wasReconnect) {
+          backfillAfterReconnect(state.selectedProjectId);
+          checkAgentStatus(state.selectedProjectId);
+        }
       }
     };
 
@@ -6267,13 +6559,14 @@
     if (status !== 'running' && projectId === state.selectedProjectId) {
       state.currentAgentMode = null;
 
-      // Clear any stale prompt blocking (plan_mode, question, permission, etc.).
-      // Discard deferred plan messages first so replaying them doesn't re-block.
+      // Clear the stale prompt hint (plan_mode, question, permission, etc.).
+      // Discard deferred plan messages first so replaying them doesn't re-arm it.
       state.deferredPlanMessage = null;
-      setPromptBlockingState(null);
+      setPromptHintState(null);
 
-      // updateInputArea() is redundant after setPromptBlockingState(null) but kept
-      // as a safety net for any other disabling paths (e.g. isModeSwitching).
+      // Re-assert a usable composer. Redundant on this path, deliberately kept:
+      // this runs whenever an agent stops, which is exactly when leftover state
+      // from a crashed or restarted run would otherwise show up.
       updateInputArea();
 
       // Clear pending permission mode change when agent stops
@@ -6580,6 +6873,8 @@
     // Initialize ApiClient (sets up global 401 redirect handler)
     ApiClient.init();
 
+    initComposerGate();
+
     // 모델 드롭다운은 이제 비어 있는 상태로 시작한다. 여기서 채우지 않으면
     // 사용자는 모델을 아예 고를 수 없으므로, 로그인 직후 한 번 받아온다.
     loadModelCatalog();
@@ -6816,7 +7111,7 @@
       formatConversationDate: Formatters.formatConversationDate,
       formatDuration: Formatters.formatDuration,
       renderConversation: renderConversation,
-      setPromptBlockingState: setPromptBlockingState,
+      setPromptHintState: setPromptHintState,
       SearchModule: SearchModule
     });
 

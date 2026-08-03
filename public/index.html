@@ -3769,6 +3769,13 @@
   <div id="toast-container" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
 
   <!-- Modules (loaded before app.js) -->
+  <!-- Single owner of the composer's enabled state. Loaded first so no other
+       module can be the one that decides whether the input is usable. -->
+  <script src="/js/modules/composer-gate.js"></script>
+  <!-- Pure, DOM-free helpers with unit tests (test/frontend/utils-*.test.js). This
+       was written as a testable module but never actually loaded by the page, so
+       anything in app.js that wanted it silently got `undefined`. -->
+  <script src="/js/utils.js"></script>
   <script src="/js/modules/local-storage.js"></script>
   <script src="/js/modules/diff-engine.js"></script>
   <script src="/js/modules/file-cache.js"></script>

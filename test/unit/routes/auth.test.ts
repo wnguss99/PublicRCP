@@ -24,6 +24,7 @@ describe('Auth Routes', () => {
       getCredentials: jest.fn(),
       createSession: jest.fn(),
       validateSession: jest.fn(),
+      touchSession: jest.fn(),
       invalidateSession: jest.fn()
     };
 

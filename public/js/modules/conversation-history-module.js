@@ -21,7 +21,7 @@
   var formatConversationDate = null;
   var formatDuration = null;
   var renderConversation = null;
-  var setPromptBlockingState = null;
+  var setPromptHintState = null;
   var SearchModule = null;
 
   function init(deps) {
@@ -34,7 +34,7 @@
     formatConversationDate = deps.formatConversationDate;
     formatDuration = deps.formatDuration;
     renderConversation = deps.renderConversation;
-    setPromptBlockingState = deps.setPromptBlockingState;
+    setPromptHintState = deps.setPromptHintState;
     SearchModule = deps.SearchModule;
   }
 
@@ -139,8 +139,8 @@
     }
 
     // Clear any prompt blocking when switching conversations
-    if (setPromptBlockingState) {
-      setPromptBlockingState(null);
+    if (setPromptHintState) {
+      setPromptHintState(null);
     }
 
     state.currentConversationId = conversationId;

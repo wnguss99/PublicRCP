@@ -2411,8 +2411,8 @@ describe('DefaultWebSocketServer', () => {
       jest.useRealTimers();
     });
 
-    const makeHeartbeatClient = (isAlive: boolean) => ({
-      isAlive,
+    const makeHeartbeatClient = (missedPongs = 0) => ({
+      missedPongs,
       terminate: jest.fn(),
       ping: jest.fn(),
       readyState: 1,
@@ -2420,37 +2420,62 @@ describe('DefaultWebSocketServer', () => {
       send: jest.fn(),
     });
 
-    it('should terminate unresponsive clients', () => {
+    const addClient = (client: unknown) => {
+      const { WebSocketServer: MockWebSocketServer } = jest.requireMock('ws');
+      const mockWssInstance = MockWebSocketServer.mock.results[0].value;
+      mockWssInstance.clients.clear();
+      mockWssInstance.clients.add(client);
+    };
+
+    /**
+     * A single missed pong must NOT kill the socket. Terminating on one miss cost
+     * mobile users the rest of a turn's output: agent_message only reaches
+     * subscribers, so everything produced before the reconnect was never delivered
+     * while the re-subscribe reported the turn as finished — the chat appeared to
+     * stop mid-answer and jump to "waiting for your input".
+     */
+    it('tolerates a single missed pong', () => {
       wsServer = new DefaultWebSocketServer({ agentManager: mockAgentManager });
       wsServer.initialize({} as Server);
 
-      const { WebSocketServer: MockWebSocketServer } = jest.requireMock('ws');
-      const mockWssInstance = MockWebSocketServer.mock.results[0].value;
-
-      const unresponsiveClient = makeHeartbeatClient(false);
-      mockWssInstance.clients.clear();
-      mockWssInstance.clients.add(unresponsiveClient);
+      const client = makeHeartbeatClient(0);
+      addClient(client);
 
       jest.advanceTimersByTime(30000);
 
-      expect(unresponsiveClient.terminate).toHaveBeenCalled();
+      expect(client.terminate).not.toHaveBeenCalled();
+      expect(client.ping).toHaveBeenCalled();
+      expect(client.missedPongs).toBe(1);
     });
 
-    it('should ping live clients and mark them as pending', () => {
+    it('terminates only after repeated silence', () => {
       wsServer = new DefaultWebSocketServer({ agentManager: mockAgentManager });
       wsServer.initialize({} as Server);
 
-      const { WebSocketServer: MockWebSocketServer } = jest.requireMock('ws');
-      const mockWssInstance = MockWebSocketServer.mock.results[0].value;
+      const client = makeHeartbeatClient(0);
+      addClient(client);
 
-      const liveClient = makeHeartbeatClient(true);
-      mockWssInstance.clients.clear();
-      mockWssInstance.clients.add(liveClient);
+      jest.advanceTimersByTime(30000); // miss 1
+      jest.advanceTimersByTime(30000); // miss 2 — still alive
+      expect(client.terminate).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(30000); // no answer at all -> reap
+      expect(client.terminate).toHaveBeenCalled();
+    });
+
+    it('forgets earlier misses once a pong arrives', () => {
+      wsServer = new DefaultWebSocketServer({ agentManager: mockAgentManager });
+      wsServer.initialize({} as Server);
+
+      const client = makeHeartbeatClient(2);
+      addClient(client);
+
+      // A pong resets the counter (handleConnection wires this); simulate it.
+      client.missedPongs = 0;
 
       jest.advanceTimersByTime(30000);
 
-      expect(liveClient.ping).toHaveBeenCalled();
-      expect(liveClient.isAlive).toBe(false);
+      expect(client.terminate).not.toHaveBeenCalled();
     });
 
     it('should not ping when wss is null (after close)', () => {
@@ -2461,7 +2486,7 @@ describe('DefaultWebSocketServer', () => {
       const mockWssInstance = MockWebSocketServer.mock.results[0].value;
 
       // Use a client with close so wsServer.close() doesn't fail
-      const client = makeHeartbeatClient(true);
+      const client = makeHeartbeatClient(0);
       mockWssInstance.clients.clear();
       mockWssInstance.clients.add(client);
 
@@ -2474,7 +2499,7 @@ describe('DefaultWebSocketServer', () => {
       expect(client.ping).not.toHaveBeenCalled();
     });
 
-    it('should handle pong to mark client as alive', () => {
+    it('resets the missed-pong counter when a pong arrives', () => {
       wsServer = new DefaultWebSocketServer({ agentManager: mockAgentManager });
       const mockHttpServer = new EventEmitter() as Server;
       wsServer.initialize(mockHttpServer);
@@ -2487,7 +2512,7 @@ describe('DefaultWebSocketServer', () => {
 
       let pongHandler: (() => void) | null = null;
       const testWs = {
-        isAlive: false,
+        missedPongs: 99,
         readyState: 1,
         send: jest.fn(),
         ping: jest.fn(),
@@ -2506,12 +2531,15 @@ describe('DefaultWebSocketServer', () => {
 
       connectionHandler(testWs);
 
-      expect(testWs.isAlive).toBe(true);
+      // A fresh connection starts with a clean slate.
+      expect(testWs.missedPongs).toBe(0);
 
-      testWs.isAlive = false;
+      testWs.missedPongs = 2;
       pongHandler!();
 
-      expect(testWs.isAlive).toBe(true);
+      // One answered ping clears the whole streak, so a flaky link that recovers
+      // never accumulates its way to a termination.
+      expect(testWs.missedPongs).toBe(0);
     });
   });
 });

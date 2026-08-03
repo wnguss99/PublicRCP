@@ -95,6 +95,7 @@ describe('auth-middleware', () => {
         getCredentials: jest.fn(),
         createSession: jest.fn(),
         validateSession: jest.fn(),
+        touchSession: jest.fn(),
         invalidateSession: jest.fn()
       };
 
@@ -104,14 +105,17 @@ describe('auth-middleware', () => {
 
       mockResponse = {
         status: jest.fn().mockReturnThis(),
-        json: jest.fn().mockReturnThis()
+        json: jest.fn().mockReturnThis(),
+        // The middleware re-issues the session cookie so the browser's Max-Age
+        // tracks the sliding server session.
+        cookie: jest.fn().mockReturnThis()
       };
 
       mockNext = jest.fn();
     });
 
     it('should call next() for valid session', () => {
-      mockAuthService.validateSession.mockReturnValue(true);
+      mockAuthService.touchSession.mockReturnValue({ id: 'valid-session-id', createdAt: Date.now(), expiresAt: Date.now() + 60000 });
       mockRequest.headers = {
         cookie: `${COOKIE_NAME}=valid-session-id`
       };
@@ -123,7 +127,7 @@ describe('auth-middleware', () => {
         mockNext
       );
 
-      expect(mockAuthService.validateSession).toHaveBeenCalledWith('valid-session-id');
+      expect(mockAuthService.touchSession).toHaveBeenCalledWith('valid-session-id');
       expect(mockNext).toHaveBeenCalled();
       expect(mockResponse.status).not.toHaveBeenCalled();
     });
@@ -147,7 +151,7 @@ describe('auth-middleware', () => {
     });
 
     it('should return 401 for invalid session', () => {
-      mockAuthService.validateSession.mockReturnValue(false);
+      mockAuthService.touchSession.mockReturnValue(null);
       mockRequest.headers = {
         cookie: `${COOKIE_NAME}=invalid-session-id`
       };
@@ -159,7 +163,7 @@ describe('auth-middleware', () => {
         mockNext
       );
 
-      expect(mockAuthService.validateSession).toHaveBeenCalledWith('invalid-session-id');
+      expect(mockAuthService.touchSession).toHaveBeenCalledWith('invalid-session-id');
       expect(mockResponse.status).toHaveBeenCalledWith(401);
       expect(mockResponse.json).toHaveBeenCalledWith({
         error: 'Unauthorized',
@@ -169,7 +173,7 @@ describe('auth-middleware', () => {
     });
 
     it('should return 401 for empty session ID in cookie', () => {
-      mockAuthService.validateSession.mockReturnValue(false);
+      mockAuthService.touchSession.mockReturnValue(null);
       mockRequest.headers = {
         cookie: `${COOKIE_NAME}=`
       };

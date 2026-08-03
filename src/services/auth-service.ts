@@ -24,11 +24,19 @@ export interface AuthService {
   getCredentials(): Credentials;
   createSession(): Session;
   validateSession(sessionId: string): boolean;
+  /** Validate and slide the expiry forward; returns the session or null. */
+  touchSession(sessionId: string): Session | null;
   invalidateSession(sessionId: string): void;
 }
 
 const PASSWORD_LENGTH = 16;
-const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days of inactivity
+/**
+ * How much the expiry must have drifted before it is worth rewriting the store.
+ * One hour keeps a busy session's disk writes down to ~24/day while still
+ * guaranteeing an active user is never logged out.
+ */
+const RENEW_INTERVAL_MS = 60 * 60 * 1000;
 
 // Character sets for password generation
 const LOWERCASE = 'abcdefghijkmnopqrstuvwxyz';
@@ -232,19 +240,47 @@ export class DefaultAuthService implements AuthService {
   }
 
   validateSession(sessionId: string): boolean {
+    return this.touchSession(sessionId) !== null;
+  }
+
+  /**
+   * Validate a session and slide its expiry forward.
+   *
+   * Sessions were a hard 7 days from login and were never extended, so a user in
+   * the middle of a working day was logged out simply because a week had passed
+   * since they signed in. That is unacceptable for an install only reachable
+   * remotely: the person it strands is the one who cannot get to the machine.
+   * Continued use now keeps a session alive indefinitely, and only genuine
+   * inactivity for SESSION_DURATION_MS ends it.
+   *
+   * The extension is throttled to at most once per RENEW_INTERVAL_MS so a busy
+   * session does not rewrite sessions.json on every request.
+   *
+   * @returns the session (with its new expiry) or null when invalid/expired
+   */
+  touchSession(sessionId: string): Session | null {
     const session = this.sessions.get(sessionId);
 
     if (!session) {
-      return false;
+      return null;
     }
 
-    if (Date.now() > session.expiresAt) {
+    const now = Date.now();
+
+    if (now > session.expiresAt) {
       this.sessions.delete(sessionId);
       this.persistSessions();
-      return false;
+      return null;
     }
 
-    return true;
+    const nextExpiry = now + SESSION_DURATION_MS;
+
+    if (nextExpiry - session.expiresAt >= RENEW_INTERVAL_MS) {
+      session.expiresAt = nextExpiry;
+      this.persistSessions();
+    }
+
+    return { ...session };
   }
 
   invalidateSession(sessionId: string): void {

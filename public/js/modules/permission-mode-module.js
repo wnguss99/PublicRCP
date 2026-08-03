@@ -113,16 +113,29 @@
     state.isModeSwitching = isSwitching;
 
     $('#btn-perm-accept, #btn-perm-plan').prop('disabled', isSwitching);
-    $('#input-message').prop('disabled', isSwitching);
-    $('#btn-send-message').prop('disabled', isSwitching);
     $('#btn-cancel-agent').prop('disabled', isSwitching);
+
+    // A mode switch is stop + wait 1s + start. If either request never settles,
+    // neither .done nor .fail runs, and this used to leave the composer disabled
+    // with no recovery. The composer is no longer touched at all; the tracked
+    // operation only bounds state.isModeSwitching, which sendMessage() checks and
+    // reports out loud instead of silently swallowing the message.
+    if (isSwitching) {
+      ComposerGate.hold('modeSwitch', {
+        ttlMs: ComposerGate.TTL.MODE_SWITCH,
+        isLive: function() {
+          return state.isModeSwitching === true;
+        },
+        projectId: state.selectedProjectId
+      });
+    } else {
+      ComposerGate.release('modeSwitch');
+    }
 
     if (isSwitching) {
       $('#permission-mode-selector').addClass('opacity-50 pointer-events-none');
-      $('#form-send-message').addClass('opacity-50');
     } else {
       $('#permission-mode-selector').removeClass('opacity-50 pointer-events-none');
-      $('#form-send-message').removeClass('opacity-50');
     }
   }
 

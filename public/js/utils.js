@@ -3,7 +3,7 @@
  * These are pure functions that can be unit tested without DOM dependencies
  */
 
-(function(global) {
+(function(root) {
   'use strict';
 
   var Utils = {};
@@ -301,13 +301,54 @@
     });
   };
 
+  /**
+   * A key that distinguishes two different chat messages but matches the same
+   * message delivered twice.
+   *
+   * Used to drop re-deliveries when a history load races with a live WebSocket
+   * frame. It was once just `timestamp + type`, and because timestamps are
+   * millisecond precision, two *different* messages of the same type produced in
+   * the same millisecond — routine when Claude issues parallel tool calls —
+   * collided and the second vanished from the view while the server had stored
+   * both. The output then reappeared on refresh, which from the outside is
+   * indistinguishable from the agent having stalled.
+   *
+   * Tool events carry an id from the CLI, the strongest identity available.
+   * Everything else falls back to content length plus a prefix: cheap to build for
+   * large stdout chunks, and enough to separate messages that share a millisecond.
+   *
+   * @param {{timestamp?: string, type?: string, content?: *, toolInfo?: {id?: string}}} message
+   * @returns {string}
+   */
+  Utils.messageIdentity = function(message) {
+    if (!message) {
+      return '';
+    }
+
+    var base = (message.timestamp || '') + ':' + (message.type || '');
+
+    if (message.toolInfo && message.toolInfo.id) {
+      return base + ':' + message.toolInfo.id;
+    }
+
+    var content = message.content;
+
+    if (typeof content !== 'string') {
+      content = content === undefined || content === null ? '' : String(content);
+    }
+
+    return base + ':' + content.length + ':' + content.slice(0, 64);
+  };
+
   // Export to global scope
   if (typeof module !== 'undefined' && module.exports) {
     // CommonJS (Node.js/Jest)
     module.exports = Utils;
   } else {
-    // Browser global
-    global.Utils = Utils;
+    // Browser global. Assigned via `root` (not `global`) because the validation
+    // gate detects registered globals by that pattern; naming it otherwise makes
+    // every use of Utils look like an undefined reference.
+    root.Utils = Utils;
   }
 
 })(typeof window !== 'undefined' ? window : global);

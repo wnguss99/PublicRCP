@@ -111,10 +111,28 @@ export function createAuthMiddleware(deps: AuthMiddlewareDependencies) {
     }
 
     const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+    const session = sessionId ? authService.touchSession(sessionId) : null;
 
-    if (!sessionId || !authService.validateSession(sessionId)) {
+    if (!session) {
       res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
       return;
+    }
+
+    // The server session slides forward on use, but the *browser* cookie has its
+    // own Max-Age fixed at login. Without re-issuing it the cookie would still
+    // expire seven days after signing in, logging out a user whose session is
+    // perfectly alive — the same failure, just moved to the client.
+    const remainingMs = session.expiresAt - Date.now();
+
+    if (remainingMs > 0) {
+      // Same options as the login route, or the browser would treat this as a
+      // different cookie and keep both.
+      res.cookie(COOKIE_NAME, sessionId as string, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: false, // Local app, no HTTPS
+        maxAge: remainingMs,
+      });
     }
 
     next();

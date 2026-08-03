@@ -96,6 +96,18 @@ const defaultFileSystem: ConversationFileSystem = {
 
 // ProjectPathResolver is now imported from interfaces.ts to avoid duplication
 
+/**
+ * Messages kept per conversation, oldest dropped first.
+ *
+ * Counted in stream *events*, not turns: one request produces a tool_use plus a
+ * tool_result for every file Claude touches, so a measured G1 conversation reached
+ * the old cap of 1000 after just 18 requests over ~39 hours (2.1 MB). That silently
+ * discarded the start of a working week. 2000 covers roughly three days of the same
+ * usage at ~4 MB, which is the point where the browser still loads a conversation
+ * quickly on a phone — the reason this is not simply set much higher.
+ */
+const DEFAULT_MAX_MESSAGES = 2000;
+
 export interface FileConversationRepositoryConfig {
   projectPathResolver: ProjectPathResolver;
   fileSystem?: ConversationFileSystem;
@@ -118,7 +130,7 @@ export class FileConversationRepository implements ConversationRepository {
   constructor(config: FileConversationRepositoryConfig) {
     this.projectPathResolver = config.projectPathResolver;
     this.fileSystem = config.fileSystem || defaultFileSystem;
-    this.maxMessages = config.maxMessagesPerConversation || 1000;
+    this.maxMessages = config.maxMessagesPerConversation || DEFAULT_MAX_MESSAGES;
     this.logger = getLogger('conversation-repository');
     this.pendingOperations = new PendingOperationsTracker('conversation-repo');
     this.writeQueues = new WriteQueueManager('conversation-repo');
@@ -258,9 +270,10 @@ export class FileConversationRepository implements ConversationRepository {
     return this.withConversationLock(projectId, conversationId, async () => {
       // Prefer the in-memory copy. Re-reading from disk here cost a full read plus
       // a JSON.parse of the whole conversation on *every* streamed message —
-      // measured at 15ms of blocked event loop and 4.4MB of I/O for a capped
-      // 1000-message conversation, repeated for each stdout/tool_use/tool_result
-      // chunk of a response.
+      // measured at 15ms of blocked event loop and 4.4MB of I/O for a conversation
+      // at the then-current 1000-message cap, repeated for each
+      // stdout/tool_use/tool_result chunk of a response. The cap is now
+      // DEFAULT_MAX_MESSAGES, so the cost this avoids scales up with it.
       //
       // The cache is authoritative because only this process writes the file (one
       // instance owns its CLAUDITO_HOME) and this lock serialises the writers.

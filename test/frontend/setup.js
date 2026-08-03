@@ -3,6 +3,21 @@
 const fs = require('fs');
 const path = require('path');
 
+// ComposerGate is the single owner of the chat composer's enabled state and is
+// loaded first in index.html, so every module may assume it exists. Mirror that
+// here rather than letting each suite stub it — a stub would let a module drift
+// away from the real gate's contract without any test noticing.
+global.ComposerGate = require('../../public/js/modules/composer-gate.js');
+
+beforeEach(() => {
+  // No lock may survive into another test.
+  global.ComposerGate._reset();
+});
+
+afterEach(() => {
+  global.ComposerGate.stop();
+});
+
 // Create a minimal jQuery mock for testing
 global.$ = global.jQuery = function(selector) {
   const elements = [];

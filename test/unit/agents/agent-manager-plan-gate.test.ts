@@ -34,6 +34,7 @@ describe('DefaultAgentManager — ExitPlanMode gate', () => {
   let agentManager: DefaultAgentManager;
   let mockAgent: jest.Mocked<Agent>;
   let coordinator: ApprovalCoordinator;
+  let addMessageMock: ReturnType<typeof createMockConversationRepository>['addMessage'];
   const PROJECT = 'test-project';
   const PLAN_SESSION_ID = '11111111-2222-4333-8444-555555555555';
   const testProject = createTestProject({ id: PROJECT });
@@ -80,6 +81,7 @@ describe('DefaultAgentManager — ExitPlanMode gate', () => {
           : null
       )
     );
+    addMessageMock = conversationRepository.addMessage;
 
     coordinator = new ApprovalCoordinator({ timeoutMs: 60_000 });
 
@@ -276,6 +278,53 @@ describe('DefaultAgentManager — ExitPlanMode gate', () => {
       // Approving restarts the agent in acceptEdits; a plain sendInput would not.
       expect(mockAgent.start).toHaveBeenCalled();
       expect(agentManager.hasPendingPlan(PROJECT)).toBe(false);
+    });
+
+    /**
+     * A message typed while a plan is pending is delivered as plan feedback. It
+     * has to be written to the conversation as well: the browser appends it
+     * optimistically, so skipping the save made it disappear on reload and left
+     * Claude's reply in the transcript with nothing prompting it.
+     */
+    it('records the message it consumed as plan feedback', async () => {
+      await agentManager.startInteractiveAgent(PROJECT);
+      emit('exitPlanMode', '## plan');
+      await settle();
+
+      setProcessing(false); // idle => the plan is a real gate
+      addMessageMock.mockClear();
+
+      agentManager.sendInput(PROJECT, 'use postgres instead');
+      await settle();
+
+      // Reached Claude...
+      expect(mockAgent.sendInput).toHaveBeenCalledWith('use postgres instead');
+
+      // ...and was persisted against the plan's session.
+      const saved = addMessageMock.mock.calls.find(
+        (call) => (call[2] as { content?: string } | undefined)?.content === 'use postgres instead'
+      );
+      expect(saved).toBeDefined();
+      expect(saved?.[1]).toBe(PLAN_SESSION_ID);
+      expect(saved?.[2]).toMatchObject({ type: 'user', content: 'use postgres instead' });
+    });
+
+    it('does not persist the synthetic button values', async () => {
+      await agentManager.startInteractiveAgent(PROJECT);
+      emit('exitPlanMode', '## plan');
+      await settle();
+
+      setProcessing(false);
+      addMessageMock.mockClear();
+
+      agentManager.sendInput(PROJECT, 'no');
+      await settle();
+
+      // 'no' comes from the reject button, not from the user's keyboard.
+      const saved = addMessageMock.mock.calls.filter(
+        (call) => (call[2] as { content?: string } | undefined)?.content === 'no'
+      );
+      expect(saved).toHaveLength(0);
     });
   });
 });

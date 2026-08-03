@@ -453,14 +453,15 @@
   function sendOneOffMessage(oneOffId) {
     var projectId = state.selectedProjectId;
 
-    if (!projectId) return;
+    if (!projectId) {
+      showToast('먼저 프로젝트를 선택해주세요.', 'warning');
+      return;
+    }
 
     var $input = $('#input-message');
     var message = $input.val().trim();
 
     if (!message) return;
-
-    $input.val('');
 
     // Show user message locally
     var userMsg = {
@@ -471,15 +472,23 @@
 
     appendMessage(projectId, oneOffId, userMsg);
 
-    api.sendOneOffMessage(projectId, oneOffId, message).fail(function(xhr) {
-      var errorMsg = 'Failed to send message';
+    api.sendOneOffMessage(projectId, oneOffId, message)
+      .done(function() {
+        // Cleared only once the server has it. The input used to be emptied before
+        // the request went out, so a failed send destroyed what the user wrote and
+        // left them to retype it from memory — the main composer has always kept
+        // the text on failure, and this path must not be the exception.
+        $input.val('').trigger('input');
+      })
+      .fail(function(xhr) {
+        var errorMsg = 'Failed to send message';
 
-      if (xhr.responseJSON && xhr.responseJSON.error) {
-        errorMsg = xhr.responseJSON.error;
-      }
+        if (xhr.responseJSON && xhr.responseJSON.error) {
+          errorMsg = xhr.responseJSON.error;
+        }
 
-      showToast(errorMsg, 'error');
-    });
+        showToast(errorMsg, 'error');
+      });
   }
 
   function setupHandlers() {

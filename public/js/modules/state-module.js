@@ -79,6 +79,7 @@
       debugPanelOpen: false,
       debugRefreshInterval: null,
       agentStatusInterval: null,
+      agentReconcileInterval: null,
       roadmapGenerating: false,
       devMode: false,
 

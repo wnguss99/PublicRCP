@@ -185,9 +185,7 @@ export class StreamHandler extends EventEmitter {
     'result': (event) => this.handleResult(event),
     'session_not_found': (event) => this.handleSessionNotFound(event),
     'status_change': (event) => this.handleStatusChange(event),
-    'rate_limit_event': (event) => this.logger.info('Rate limit event received', {
-      retryAfterMs: (event as unknown as { retry_after_ms?: number }).retry_after_ms,
-    }),
+    'rate_limit_event': (event) => this.handleRateLimitEvent(event),
   };
 
   /**
@@ -859,6 +857,33 @@ export class StreamHandler extends EventEmitter {
 
   private emitMessage(message: AgentMessage): void {
     this.emit('message', message);
+  }
+
+  /**
+   * Tell the user a rate limit was hit.
+   *
+   * This used to only write a log line. From the browser the turn was
+   * indistinguishable from a hang: the working indicator kept spinning, no message
+   * arrived, and the wait can be minutes — so the chat looked broken and the
+   * natural reaction was to resend or restart, neither of which helps. An
+   * unexplained silence is the worst failure mode this UI has, so say what is
+   * happening even though nothing is wrong.
+   */
+  private handleRateLimitEvent(event: StreamEvent): void {
+    const retryAfterMs = (event as unknown as { retry_after_ms?: number }).retry_after_ms;
+
+    this.logger.info('Rate limit event received', { retryAfterMs });
+
+    const waitNote =
+      typeof retryAfterMs === 'number' && retryAfterMs > 0
+        ? ` 약 ${Math.max(1, Math.round(retryAfterMs / 1000))}초 뒤 자동으로 재시도합니다.`
+        : ' 잠시 후 자동으로 재시도합니다.';
+
+    this.emitMessage({
+      type: 'system',
+      content: `[사용량 한도에 도달해 대기 중입니다.${waitNote} 다시 보내지 않아도 됩니다.]`,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private emitTextMessage(text: string): void {

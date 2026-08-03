@@ -10,6 +10,13 @@ import { parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import { ResourceStats, ResourceEventData } from './types';
 import { DockerBuildProgressData } from '../services/docker/types';
 
+const HEARTBEAT_INTERVAL_MS = 30000;
+/**
+ * Consecutive unanswered pings before a socket is considered dead. Kept above 1
+ * because mobile clients miss a single pong routinely — see startHeartbeat().
+ */
+const HEARTBEAT_MAX_MISSED_PONGS = 2;
+
 export interface ConnectedClient {
   clientId: string;
   projectId?: string;
@@ -310,23 +317,38 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
     this.startHeartbeat();
   }
 
+  /**
+   * Reap sockets that have genuinely gone away — but not on a single missed pong.
+   *
+   * One miss used to terminate the connection. A phone that switches network, dozes
+   * the radio, or hiccups over the tunnel misses a pong routinely, and every
+   * termination cost the user the rest of the turn's output: `agent_message` only
+   * goes to subscribers, so everything produced before the client reconnected was
+   * never delivered, while `agent_status` on re-subscribe reported the turn as
+   * finished. The chat looked like it had stopped mid-answer and jumped to "waiting
+   * for your input", with the real output only appearing after a refresh.
+   *
+   * Two consecutive misses (~60s of silence) still reaps a dead socket, and the
+   * client backfills history on reconnect, so a reap is no longer lossy either.
+   */
   private startHeartbeat(): void {
     this.pingInterval = setInterval(() => {
       if (!this.wss) return;
 
       this.wss.clients.forEach((ws) => {
-        const client = ws as WebSocket & { isAlive?: boolean };
+        const client = ws as WebSocket & { missedPongs?: number };
+        const missed = (client.missedPongs || 0) + 1;
 
-        if (client.isAlive === false) {
-          this.logger.debug('Terminating unresponsive WebSocket client');
+        if (missed > HEARTBEAT_MAX_MISSED_PONGS) {
+          this.logger.debug('Terminating unresponsive WebSocket client', { missed });
           client.terminate();
           return;
         }
 
-        client.isAlive = false;
+        client.missedPongs = missed;
         client.ping();
       });
-    }, 30000);
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private verifyClient(
@@ -408,9 +430,9 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
   }
 
   private handleConnection(ws: WebSocket): void {
-    const client = ws as WebSocket & { isAlive?: boolean };
-    client.isAlive = true;
-    client.on('pong', () => { client.isAlive = true; });
+    const client = ws as WebSocket & { missedPongs?: number };
+    client.missedPongs = 0;
+    client.on('pong', () => { client.missedPongs = 0; });
 
     this.sendMessage(ws, { type: 'connected', data: 'Connected to Claudito WebSocket' });
 

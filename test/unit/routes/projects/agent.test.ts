@@ -387,6 +387,9 @@ describe('Agent routes', () => {
 
       expect(response.status).toBe(409);
       expect(response.body.error).toContain('already running');
+      // The client answers this code by delivering the message to the agent that
+      // is already up, instead of dropping it. Do not remove the code.
+      expect(response.body.code).toBe('AGENT_ALREADY_RUNNING');
     });
 
     it('should pass images and permissionMode to startInteractiveAgent', async () => {
@@ -620,7 +623,14 @@ describe('Agent routes', () => {
       expect(deps.agentManager.approvePlan).toHaveBeenCalledWith(PROJECT_ID, 'yes');
     });
 
-    it('should return error when agent not running', async () => {
+    /**
+     * Both rejections carry a code, because the browser recovers from them instead
+     * of showing an error the user can only answer by retyping: AGENT_NOT_RUNNING
+     * starts the agent with the same message, and AGENT_ALREADY_RUNNING (from the
+     * start route) delivers it to the agent that is already up. Matching on the
+     * sentence would break that silently, so the code is what is asserted.
+     */
+    it('tags "not running" with AGENT_NOT_RUNNING so the client can recover', async () => {
       const deps = buildDeps();
       deps.agentManager.isRunning = jest.fn().mockReturnValue(false);
       deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(false);
@@ -631,10 +641,10 @@ describe('Agent routes', () => {
         .send({ message: 'Hello' });
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toContain('not running');
+      expect(response.body.code).toBe('AGENT_NOT_RUNNING');
     });
 
-    it('should return error when agent not in interactive mode', async () => {
+    it('tags a non-interactive agent with AGENT_NOT_INTERACTIVE', async () => {
       const deps = buildDeps();
       deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
       deps.agentManager.getAgentMode = jest.fn().mockReturnValue('autonomous');
@@ -645,28 +655,29 @@ describe('Agent routes', () => {
         .send({ message: 'Hello' });
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toContain('not in interactive mode');
+      expect(response.body.code).toBe('AGENT_NOT_INTERACTIVE');
+      // Says what to do, rather than naming an internal mode.
+      expect(response.body.error).toContain('Stop it to chat');
     });
 
-    it('should return error when plan approval is pending', async () => {
+    /**
+     * A pending plan must never refuse a message.
+     *
+     * This route used to answer 400 PLAN_APPROVAL_PENDING whenever the plan
+     * looked live. "Live" is inferred — one of its signals is just that the agent
+     * is idle, which is equally true of an agent that already moved on — so when
+     * the inference was wrong the user could not send anything at all, and was
+     * told to use controls that were spent or had never rendered.
+     *
+     * sendInput() already routes the message into handlePlanApprovalResponse()
+     * when a plan is genuinely pending ('yes' approves, 'no' rejects, anything
+     * else becomes plan feedback), so the message is delivered either way.
+     */
+    it('should deliver the message instead of rejecting it when a plan is live', async () => {
       const deps = buildDeps();
       deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
       deps.agentManager.getAgentMode = jest.fn().mockReturnValue('interactive');
       deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(true);
-      const app = buildApp(deps);
-
-      const response = await request(app)
-        .post(`/api/projects/${PROJECT_ID}/agent/send`)
-        .send({ message: 'Hello' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('plan approval');
-    });
-
-    it('should tag a live plan rejection with PLAN_APPROVAL_PENDING', async () => {
-      const deps = buildDeps();
-      deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
-      deps.agentManager.getAgentMode = jest.fn().mockReturnValue('interactive');
       deps.agentManager.reconcilePendingPlan = jest.fn().mockReturnValue('live');
       const app = buildApp(deps);
 
@@ -674,10 +685,24 @@ describe('Agent routes', () => {
         .post(`/api/projects/${PROJECT_ID}/agent/send`)
         .send({ message: 'Hello' });
 
-      expect(response.status).toBe(400);
-      // The frontend keys off this code to converge on the blocked state instead
-      // of merely showing a toast.
-      expect(response.body.code).toBe('PLAN_APPROVAL_PENDING');
+      expect(response.status).toBe(200);
+      expect(deps.agentManager.sendInput).toHaveBeenCalledWith(PROJECT_ID, 'Hello', undefined);
+    });
+
+    it('should never answer with PLAN_APPROVAL_PENDING again', async () => {
+      const deps = buildDeps();
+      deps.agentManager.isRunning = jest.fn().mockReturnValue(true);
+      deps.agentManager.getAgentMode = jest.fn().mockReturnValue('interactive');
+      deps.agentManager.hasPendingPlan = jest.fn().mockReturnValue(true);
+      deps.agentManager.reconcilePendingPlan = jest.fn().mockReturnValue('live');
+      const app = buildApp(deps);
+
+      const response = await request(app)
+        .post(`/api/projects/${PROJECT_ID}/agent/send`)
+        .send({ message: 'Hello' });
+
+      expect(response.body.code).toBeUndefined();
+      expect(JSON.stringify(response.body)).not.toContain('PLAN_APPROVAL_PENDING');
     });
 
     /**

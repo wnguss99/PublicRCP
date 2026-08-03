@@ -153,12 +153,16 @@ CLI calls. Answering one used to leave the other set, and `agent/send` rejected
 every message with 400 until the process restarted. On 2026-08-01 that had hit
 **five projects across two ports**, G1 among them.
 
-- **`pendingPlans` may only gate a send while it is still live.** `handleSend`
-  and `GET /agent/status` both call `reconcilePendingPlan()`, which decides from
-  facts — agent alive, session still matches, CLI modal still open, agent idle —
-  never from a bare timeout. The 10 s status poll therefore retires a stale lock
-  even if nobody tries to send. Do not reintroduce a raw `hasPendingPlan()`
-  rejection.
+- **A pending plan must never reject a message.** `handleSend` used to answer
+  `400 PLAN_APPROVAL_PENDING` whenever `reconcilePendingPlan()` said the plan was
+  live, and that made the lockout worse rather than better: "live" is *inferred*,
+  and one of its signals is simply that the agent is idle — equally true of an
+  agent that already moved on. When the inference was wrong every message came
+  back 400 telling the user to press controls that were spent or had never
+  rendered. The rejection was also redundant: `sendInput()` already routes the
+  message into `handlePlanApprovalResponse()` ('yes' approves, 'no' rejects,
+  anything else becomes plan feedback). Reconcile, then deliver. Do not
+  reintroduce any rejection here — `agent.test.ts` asserts the code is gone.
 - **The `sendInput` plan branch must not require `agent.isWaitingForInput`.**
   That was the second half of the deadlock: once the CLI's gate was answered the
   agent resumed, the flag went false, and the branch that could have consumed the
@@ -167,11 +171,66 @@ every message with 400 until the process restarted. On 2026-08-01 that had hit
   Remembering it made later prompts auto-approve with *no user-visible event at
   all*, so the card locked with nothing to click — the variant no event hook can
   catch, which is why the reconcile above is mandatory rather than a nicety.
-- **`getFullStatus().hasPendingPlan` is the UI's only authority.**
-  `updateInputArea()` used to enable the composer unconditionally on every
-  `agent_status`, so the UI offered an input the server would reject. It now
-  honours `state.activePromptType`, and `syncPlanBlockingState()` reconciles both
-  directions.
+- **The plan-feedback branch must persist the user's message**
+  (`persistUserMessage()`). It bypasses `sendInput()`, so the text reached Claude
+  but was never written to the conversation: the browser's optimistic append made
+  it look saved, and it vanished on reload, leaving a reply with nothing
+  prompting it. `'yes'`/`'no'` are synthetic button values and stay unpersisted.
+- **`getFullStatus().hasPendingPlan` is a UI hint only.** It may set the
+  placeholder and keep the plan card armed; it must never disable the composer or
+  gate a send. See the composer invariant below.
+
+### The chat composer must never stay disabled (2026-08-01, second incident)
+
+The fix above disabled the composer from `state.activePromptType` instead of
+enabling it unconditionally. That removed the only thing that had been
+recovering leaked prompt locks, and turned every leak into a permanently
+unusable chat input — recoverable only by restarting the server. Since claudito
+is driven from a phone through Tailscale, that is a total loss of control.
+
+**The invariant: the composer is never disabled. Not for a prompt, not while
+sending, not during a restart — never.**
+
+An earlier revision of this fix instead *bounded* how long a lock could hold the
+input (liveness predicates, TTLs, a hard ceiling, a one-tap unlock button). Every
+one of those still had a window where the user was stuck, and the button put the
+job of noticing a bug on the person least able to diagnose it. Refusing to
+disable at all has no window and needs no user action.
+
+- **`ComposerGate.apply()` only ever writes `disabled = false`**, and it runs on
+  every watchdog tick, so it repairs a composer that anything else disabled.
+  `test/frontend/composer-single-owner.test.js` fails the build if *any* file —
+  the gate included — disables the composer, greys it out, or makes it read-only
+  or pointer-events-none. Six independent writers, each releasing only on its own
+  event, is what produced both incidents; there is now zero.
+- **Blocking an action never means blocking the input.** If something must not
+  run yet (send already in flight, permission-mode switch mid-restart), refuse it
+  in `sendMessage()` with a toast. A silent `return` is the invisible twin of the
+  dead-input bug — the app appears to ignore the user.
+- **Tracked operations bound the *flags*, not the input.** `hold(reason, {isLive,
+  ttlMs})` exists because `messageSending` / `agentStarting` / `isModeSwitching` /
+  `isRalphLoopRunning` make code paths return early; `onLockReaped` clears them
+  when the operation goes stale. TTLs stay capped (`MAX_TTL_MS`).
+- **`hasAnswerableControl()` keeps `state.activePromptType` honest.** Answering a
+  card disables its buttons, so a resolved or replayed card reports false and the
+  stale "answer above" hint is retired. It no longer gates usability.
+- **Rendering must never arm prompt state.** `renderAskUserQuestion()` used to,
+  and it runs during replay, so reopening a conversation with an old answered
+  question re-armed it. Live arming belongs to `appendMessage()`, inside the
+  selected-project branch — a background project's question must not affect the
+  project on screen — and `restorePromptState()` handles reload.
+- **The watchdog is independent of the WebSocket and the status poll**, and also
+  ticks on `visibilitychange` / `focus` / `online` / `pageshow`, because a phone
+  freezes background timers and drops sockets constantly.
+- **The plan gate no longer rejects a send at all** (see above), so there is no
+  rejection for the UI to react to. `showPlanRecoveryCard()` existed only to
+  repair the card after a 400 and was removed with it.
+- **A pending prompt owns the placeholder** (`promptPlaceholderText()`), which is
+  now the only signal that something is waiting. `updateInputHint()` must keep
+  deferring to it — it runs on every `agent_status` and would otherwise erase it.
+- No global `$.ajaxSetup` timeout: operation TTLs already bound in-flight state,
+  while a blanket timeout would abort slow-but-legitimate calls (repo clone,
+  docker pull, one-off agents).
 
 ### Caveats that are inherent, not bugs
 
@@ -243,6 +302,114 @@ All project routes prefixed with `/api/projects/:id`. Standard REST verbs (GET/P
 **One-Off Agents**: `oneoff_message`, `oneoff_status`, `oneoff_waiting` (includes oneOffId, isWaiting, version)
 
 **Run Configurations**: `run_config_output` (configId, data), `run_config_status` (configId, status)
+
+### A message must never be silently lost or refused (2026-08-03 audit)
+
+Every "the chat doesn't work" report so far has been one of three shapes: the
+composer was disabled, the send was refused with nothing the user could do, or the
+answer never appeared. The first is impossible by construction (see below); these
+rules close the other two.
+
+- **Nothing refuses a send silently.** Every early `return` in `sendMessage()` /
+  `sendOneOffMessage()` shows a toast. A silent return reads as "the app ignores
+  me", which is undiagnosable from the outside and worse than a visible error.
+- **A stale idea of whether the agent is running must self-heal, in both
+  directions.** The client's `project.status` is a cached belief and was wrong in
+  every incident here, so the server tags the two disagreements and the client
+  acts on them instead of surfacing an error the user can only answer by retyping:
+  `AGENT_NOT_RUNNING` (send → start the agent with the same message) and
+  `AGENT_ALREADY_RUNNING` (start → deliver it to the running agent). Match on the
+  **code**, never the sentence.
+- **One recovery hop, ever.** Those two handoffs are exact opposites, so a server
+  flapping between states would bounce the same message forever. `fromRecovery`
+  bounds it to a single hop and also suppresses the duplicate echo, since the
+  message is already on screen by then.
+- **The composer keeps its text unless the server accepted it.** Only `.done()`
+  clears. `sendOneOffMessage()` used to clear before the request went out, so a
+  failed send destroyed what the user had written.
+- **A WebSocket reconnect reloads the conversation.** Re-subscribing restores the
+  stream but nothing replays what was missed, so the reply to the last message
+  could sit on the server while the chat looked frozen. That is what made
+  "switching project and back" appear to fix things — that path reloads history.
+  `onopen` now does it for a reconnect (not the first connect, which already loads).
+- **A dropped socket must not cost the turn's output.** `agent_message` goes only to
+  subscribers, while `agent_status` on re-subscribe reports the turn as finished. So
+  a reaped socket produced exactly this report: the chat stopped mid-answer and
+  jumped to "Waiting for your input" with no completion, and the real output
+  appeared only after a refresh. Two fixes together: the heartbeat tolerates
+  `HEARTBEAT_MAX_MISSED_PONGS` (2, ~60s) instead of reaping on one missed pong, and
+  the client reloads history on reconnect so a reap is no longer lossy.
+- **Message dedup keys on identity, never on `timestamp + type`.**
+  `Utils.messageIdentity()` adds the tool id or the content, because timestamps are
+  millisecond precision and parallel tool calls collide inside one millisecond — the
+  second message was dropped from the view while the server stored both, which again
+  looks like a stall that a refresh "fixes". `utils.js` is loaded by `index.html` for
+  this (it previously existed for tests only, so anything reaching for `Utils` in the
+  browser silently got `undefined`); it registers via `root.X =` because that is the
+  pattern the validation gate uses to recognise a global.
+- **A silent wait must announce itself.** `rate_limit_event` was logged and nothing
+  more; from the browser a rate-limited turn was indistinguishable from a hang
+  (spinner running, no output, for minutes), so the reaction was to resend or
+  restart — neither helps. `handleRateLimitEvent()` emits a `system` message with
+  the retry delay and says not to resend. Any future "the agent is waiting on
+  something invisible" event needs the same treatment.
+
+**A session must not expire while it is being used** (2026-08-03). Sessions were a
+hard 7 days from login and `validateSession()` never extended them, so an active
+user was logged out mid-work simply because a week had passed since signing in —
+and the person that strands is the remote one who cannot reach the machine.
+`touchSession()` slides the expiry forward on every authenticated request or WS
+handshake (throttled to one store write per hour), and the auth middleware
+re-issues the cookie with the new `Max-Age`, because the browser cookie has its own
+lifetime and would otherwise expire on the original schedule. Only genuine
+inactivity for the full window ends a session now. Credentials are pinned in `.env`
+(`CLAUDITO_USERNAME`/`CLAUDITO_PASSWORD`) — leave them set, since without them
+`getOrGenerateCredentials()` invents a random password on boot, which changes the
+credential fingerprint, drops every session, and locks everyone out.
+
+**Concurrency is per instance, not shared** (checked 2026-08-03): the limit lives in
+each process's `agents` map with a default of **5** (`MAX_CONCURRENT_AGENTS` is not
+set in `ecosystem.config.js`), so three users on three ports never queue each other
+— it only binds when one instance runs 6+ projects, and then it says so
+(`Maximum concurrent agents limit (5) reached…`). The genuinely shared resources are
+the single Claude subscription and `~/.claude*`, which is why rate limits are the
+real contention point.
+
+### A project's status has exactly one owner (2026-08-03, G1)
+
+G1 showed "Claude agent exited with code 1" and an Error badge, kept working
+normally for the next eight minutes, and looked fine again after switching project
+and back. Nothing had actually stopped: `status.json` was stuck on `error` while
+the live agent was running, and the two are read by different paths.
+
+- **`status.json` is a cache of live process state, never the display truth.**
+  Both `GET /api/projects` and `GET /api/projects/:id` overlay
+  `agentManager.getAgentStatus()`. `reconcilePersistedStatuses()` runs at startup
+  to clear `running`/`error` left behind by a crash, since no agent can exist yet.
+- **Never persist the status that was reported — derive it.**
+  `syncPersistedStatus()` reads the current owner (`agents.get(projectId)`), so the
+  result does not depend on which write happens last. The old code copied the
+  reported value, and a dying agent's `error` landing after its replacement's
+  `running` was stored permanently: a live agent only emits on *change*, so nothing
+  ever corrected it.
+- **An exit reconciles the flag.** No process running means `stopped`; the reason
+  for the failure lives in the persisted `system` message, not in this field.
+- **Only the current agent may touch project state.** `isCurrentAgent()` guards the
+  status/waiting/plan/contextUsage listeners, and `handleAgentExit()` now runs
+  `teardownAgentListeners()` — before, `setupAgentListeners()` attached eight
+  listeners that were never removed, so a replaced agent kept writing project state
+  from a dead process. The `exit` and `sessionNotFound` paths are deliberately not
+  guarded: handling them is the dead agent's own job.
+- **`system` messages are persisted** (`messageListener`), and so is the request
+  that *starts* an agent when the user typed it (`persistInitialMessage`, set only
+  by the HTTP route). Both were broadcast-only, so reloading erased the failure
+  line and left a stored conversation whose first entry was Claude answering a
+  question that was nowhere in it. Internal restarts pass synthetic prompts
+  ('Continue', 'I approved the plan…') and must stay unpersisted.
+- **The client keeps a 30 s reconcile poll when it believes the agent is not
+  running.** Polling used to stop dead, so one missed `agent_status` frame — routine
+  on a phone — stranded the badge on Error until the user switched project and
+  back, which is precisely what re-subscribing fixed.
 
 ## Ralph Loop
 
@@ -360,6 +527,26 @@ build (2026-07-31):
    `restart-safe`, so after two consecutive failed recovery cycles the watchdog
    restores `.lkg/dist` itself. At a 2-minute interval that is ~4 minutes to
    self-heal.
+
+**A restart that did not replace the processes is a failure, not a success**
+(2026-08-03). Ports 4000-4002 were held by instances started with elevated
+privileges, so `pm2 restart` answered `[PM2][ERROR] Process N not found` for all
+three and the new apps fell into `waiting` on EADDRINUSE. The old processes kept
+answering `/api/health`, so the script reported "재시작 완료 — 전부 정상", exited
+`0`, and refreshed known-good with a `dist` that had never been loaded. Had that
+build been broken, the rollback snapshot would now hold the broken build — the
+safety net silently disarmed. Three rules keep it honest:
+
+- **A non-zero `pm2 restart` exit aborts immediately.** Printing it in red and
+  carrying on was the same bug in slower motion. Nothing was replaced, so
+  stopping leaves the running instances untouched — the safest outcome.
+- **Health is 200 *and* a changed listener PID.** `Get-PortOwners` reads the
+  owning PID via `Get-NetTCPConnection`, which works even when the other process
+  is elevated. HTTP alone cannot distinguish a new process from an old one still
+  serving.
+- **Exit `3` means "responding, but the same process as before".** No rollback:
+  the new code was never loaded, so reverting `dist` would fix nothing and
+  updating known-good would be dangerous.
 
 **The known-good snapshot must only ever be taken after a restart proved healthy.**
 Snapshotting *before* the restart looks equivalent and is not: a previous failed

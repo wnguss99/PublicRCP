@@ -624,13 +624,14 @@
 
     html += '</div>'; // message container
 
-    // Trigger UI blocking after rendering
-    setTimeout(function() {
-      if (typeof window !== 'undefined' && window.setPromptBlockingState) {
-        window.setPromptBlockingState('askuser');
-      }
-    }, 0);
-
+    // Deliberately does NOT block the composer.
+    //
+    // Rendering is replay: this function also runs for cards that were answered
+    // long ago (project switch, page reload, history load). Arming the lock here
+    // ignored toolInfo.status, so replaying a finished question disabled the
+    // input with only already-disabled buttons to answer it. Live arming belongs
+    // to appendMessage(), and restorePromptState() handles a genuinely unanswered
+    // question on reload.
     return html;
   }
 

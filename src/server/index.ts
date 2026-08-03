@@ -156,6 +156,9 @@ export class ExpressHttpServer implements HttpServer {
     // Cleanup any orphan processes from previous runs
     await this.cleanupOrphanProcesses();
 
+    // ...and the statuses those processes left claiming to be alive.
+    await this.reconcilePersistedStatuses();
+
     // Each run writes MCP configs / archives into a PID-named temp folder, so
     // without this every restart would leave one behind permanently.
     pruneStaleInstanceTempDirs();
@@ -200,6 +203,25 @@ export class ExpressHttpServer implements HttpServer {
         resolve();
       });
     });
+  }
+
+  private async reconcilePersistedStatuses(): Promise<void> {
+    const agentManager = getAgentManager();
+
+    if (!agentManager) {
+      return;
+    }
+
+    try {
+      const corrected = await agentManager.reconcilePersistedStatuses();
+
+      if (corrected > 0) {
+        console.log(`Cleared ${corrected} stale project status(es) from the previous run`);
+      }
+    } catch (err) {
+      // Never block startup on a bookkeeping fix.
+      console.error('Failed to reconcile project statuses:', err instanceof Error ? err.message : err);
+    }
   }
 
   private async cleanupOrphanProcesses(): Promise<void> {

@@ -15,10 +15,27 @@
 #   2. 검증 게이트 → 재시작 → 헬스체크
 #   3. 하나라도 안 뜨면 스냅샷을 되돌리고 다시 재시작해 복구한다
 #
+# 2026-08-03: "재시작하지 않았는데 성공" 을 없앴다. 포트가 관리자 권한으로 뜬 예전
+# 프로세스에 잡혀 있어 pm2 restart 가 세 개 다 실패했는데, 그 예전 프로세스가 200 을
+# 돌려주는 바람에 스크립트는 성공(exit 0)을 반환하고 known-good 까지 갱신했다.
+# 새 코드는 반영되지 않았고, 만약 그 코드가 깨져 있었다면 깨진 빌드가 known-good 으로
+# 저장되어 자동 롤백이 무의미해진다. 그래서:
+#
+#   - pm2 restart 가 하나라도 실패하면 즉시 중단한다(교체가 없었으므로).
+#   - 헬스체크는 200 만으로 통과시키지 않고, 그 포트를 물고 있는 PID 가 재시작 전과
+#     달라졌는지도 확인한다. 이것이 "정말 교체됐는지" 를 아는 유일한 사실이다.
+#   - known-good 갱신은 그 두 조건을 모두 통과한 뒤에만 한다.
+#
 # 사용:
 #   powershell -ExecutionPolicy Bypass -File scripts/restart-safe.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts/restart-safe.ps1 -Static     # 스모크 생략(빠름)
 #   powershell -ExecutionPolicy Bypass -File scripts/restart-safe.ps1 -NoRollback # 롤백 끄기(디버깅용)
+#
+# 종료 코드:
+#   0  재시작 성공(새 프로세스로 교체 확인됨)
+#   1  검증 실패 / pm2 실패 / 롤백까지 실패 — 어느 쪽이든 메시지에 명시된다
+#   2  롤백됨 — 방금 빌드한 코드가 원인이다
+#   3  교체 실패 — 응답은 오지만 예전 프로세스다. 코드 문제가 아니므로 롤백하지 않는다
 param(
     [switch]$Static,
     [string]$Port,
@@ -32,12 +49,27 @@ $pm2Wrapper = Join-Path $root 'scripts\pm2.ps1'
 $distPath = Join-Path $root 'dist'
 $lkgPath = Join-Path $root '.lkg\dist'
 
+# Returns ONLY pm2's exit code.
+#
+# This used to let the wrapper's stdout fall through to the pipeline and then
+# `return $LASTEXITCODE`, so the function actually returned an array of
+# [...output, code]. `if ($exit -ne 0)` on an array does not compare — PowerShell
+# filters it and hands back the non-matching elements, which is a non-empty array
+# and therefore always truthy. Every caller was reading "pm2 failed" no matter what
+# pm2 did; the check only looked correct while pm2 was genuinely failing. Print the
+# output through Write-Host (which does not touch the pipeline) and return an int.
 function Invoke-Pm2 {
     param([string[]]$Pm2Args)
 
     $ErrorActionPreference = 'Continue'
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pm2Wrapper @Pm2Args
-    return $LASTEXITCODE
+    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pm2Wrapper @Pm2Args 2>&1
+    $code = $LASTEXITCODE
+
+    foreach ($line in @($output)) {
+        Write-Host "   $line" -ForegroundColor DarkGray
+    }
+
+    return [int]$code
 }
 
 function Get-TargetPorts {
@@ -55,23 +87,82 @@ function Get-TargetPorts {
     return ($raw | Out-String).Trim() -split '\s+'
 }
 
+# 각 포트를 실제로 listen 하고 있는 프로세스 ID.
+#
+# 재시작이 "일어났는지" 를 판정하는 유일한 사실이다. HTTP 응답만으로는 새 프로세스가
+# 떴는지 알 수 없다 — 구 프로세스가 계속 답하고 있어도 200 이 온다.
+# Get-NetTCPConnection 은 상대 프로세스가 관리자 권한이어도 소유 PID 를 알려주므로,
+# 권한이 갈린 상황(2026-08-03) 에서도 판정할 수 있다.
+function Get-PortOwners {
+    param([string[]]$Ports)
+
+    $owners = @{}
+
+    foreach ($p in $Ports) {
+        $ErrorActionPreference = 'Continue'
+        $conn = Get-NetTCPConnection -LocalPort ([int]$p) -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $owners[[string]$p] = if ($conn) { [string]$conn.OwningProcess } else { $null }
+    }
+
+    return $owners
+}
+
 # 기동에는 몇 초가 걸린다. 한 번 찔러보고 실패로 단정하면 멀쩡한 배포를 롤백한다.
+#
+# "정상" 의 조건은 두 가지이며 둘 다 필요하다:
+#   1. /api/health 가 200 을 준다
+#   2. 그 포트를 물고 있는 PID 가 재시작 *전* 과 다르다
+#
+# 2번이 없던 동안 이런 일이 났다(2026-08-03): 포트가 관리자 권한으로 뜬 예전
+# 프로세스에 잡혀 있어 pm2 restart 가 세 개 다 "Process not found" 로 실패했는데,
+# 그 예전 프로세스가 200 을 돌려주는 바람에 스크립트는 성공으로 판정하고 known-good
+# 까지 새 dist 로 갱신했다. 새 코드가 깨져 있었다면 깨진 빌드를 known-good 으로
+# 저장하는 것이므로, 자동 롤백이라는 안전망 자체가 조용히 무력화된다.
 function Wait-Healthy {
-    param([string[]]$Ports, [int]$Attempts = 10, [int]$DelaySeconds = 3)
+    param(
+        [string[]]$Ports,
+        [hashtable]$OwnersBefore,
+        [int]$Attempts = 10,
+        [int]$DelaySeconds = 3
+    )
+
+    $bad = @()
+    $stale = @()
 
     for ($i = 1; $i -le $Attempts; $i++) {
         $bad = @()
+        $stale = @()
+        $ownersNow = Get-PortOwners -Ports $Ports
 
         foreach ($p in $Ports) {
+            $healthy = $false
+
             try {
                 $r = Invoke-WebRequest -Uri "http://127.0.0.1:$p/api/health" -UseBasicParsing -TimeoutSec 6
-                if ($r.StatusCode -ne 200) { $bad += $p }
+                $healthy = ($r.StatusCode -eq 200)
             }
-            catch { $bad += $p }
+            catch { $healthy = $false }
+
+            if (-not $healthy) {
+                $bad += $p
+                continue
+            }
+
+            if ($OwnersBefore) {
+                $before = $OwnersBefore[[string]$p]
+                $now = $ownersNow[[string]$p]
+
+                # 재시작 전에 아무도 안 물고 있었다면(인스턴스가 죽어 있던 경우)
+                # 새로 뜬 것 자체가 교체 성공이다.
+                if ($before -and $now -and $before -eq $now) {
+                    $stale += $p
+                }
+            }
         }
 
-        if ($bad.Count -eq 0) {
-            return @()
+        if ($bad.Count -eq 0 -and $stale.Count -eq 0) {
+            return @{ Bad = @(); Stale = @() }
         }
 
         if ($i -lt $Attempts) {
@@ -79,7 +170,7 @@ function Wait-Healthy {
         }
     }
 
-    return $bad
+    return @{ Bad = $bad; Stale = $stale }
 }
 
 # 디렉터리를 "항상 최소 하나의 온전한 사본이 남는" 방식으로 교체한다.
@@ -194,21 +285,43 @@ try {
     Write-Host ''
     Write-Host "2) 재시작: $($ports -join ', ')" -ForegroundColor Green
 
+    # 재시작 전 소유자를 기록해 둔다. 이게 없으면 "정말 교체됐는지" 를 판정할 수 없다.
+    $ownersBefore = Get-PortOwners -Ports $ports
+
     # pm2 의 종료 코드를 버리면 안 된다. 예전에는 Out-Null 로 흘려보내서, pm2 가
     # EPERM 으로 아무것도 못 했는데도 헬스체크가 "이전 프로세스가 아직 살아있다"
     # 는 이유로 통과해 재시작이 성공한 것처럼 보였다.
+    #
+    # 출력만 하고 계속 진행하는 것도 같은 사고다(2026-08-03 재현). pm2 가 한 개라도
+    # 실패했다면 교체는 일어나지 않았고, 그 상태로 진행하면 known-good 을 검증되지
+    # 않은 dist 로 갱신하게 된다. 즉시 중단한다 — 기존 인스턴스는 살아 있으므로
+    # 중단이 가장 안전한 선택이다.
+    $pm2Failed = @()
+
     foreach ($p in $ports) {
         $exit = Invoke-Pm2 @('restart', "claudito-$p", '--update-env')
         if ($exit -ne 0) {
             Write-Host "   pm2 restart claudito-$p 실패 (exit $exit)" -ForegroundColor Red
+            $pm2Failed += $p
         }
     }
 
-    Write-Host '3) 헬스체크 (최대 30초 대기)' -ForegroundColor Cyan
-    $failed = Wait-Healthy -Ports $ports
+    if ($pm2Failed.Count -gt 0) {
+        Write-Host ''
+        Write-Host "pm2 가 :$($pm2Failed -join ', ') 을 재시작하지 못했다 — 교체가 일어나지 않았다." -ForegroundColor Red
+        Write-Host '기존 인스턴스는 그대로 살아 있고, known-good 도 건드리지 않았다.' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host '흔한 원인: 포트를 pm2 가 관리하지 않는 프로세스(예: 관리자 권한으로 직접 띄운 것)가' -ForegroundColor Yellow
+        Write-Host '점유하고 있어 pm2 앱이 바인딩에 실패하고 waiting 으로 빠지는 경우.' -ForegroundColor Yellow
+        Write-Host '확인: scripts\pm2.ps1 list  /  Get-NetTCPConnection -LocalPort <port> -State Listen' -ForegroundColor Yellow
+        exit 1
+    }
 
-    if ($failed.Count -eq 0) {
-        foreach ($p in $ports) { Write-Host "   :$p OK" -ForegroundColor Green }
+    Write-Host '3) 헬스체크 + 교체 확인 (최대 30초 대기)' -ForegroundColor Cyan
+    $result = Wait-Healthy -Ports $ports -OwnersBefore $ownersBefore
+
+    if ($result.Bad.Count -eq 0 -and $result.Stale.Count -eq 0) {
+        foreach ($p in $ports) { Write-Host "   :$p OK (새 프로세스)" -ForegroundColor Green }
 
         # 지금 돌고 있는 이 dist 는 방금 실제로 떠서 응답한 것이 확인됐다.
         # 이것만이 롤백 대상이 될 자격이 있다.
@@ -222,7 +335,18 @@ try {
         exit 0
     }
 
-    Write-Host "   실패: :$($failed -join ', ')" -ForegroundColor Red
+    # 응답은 오지만 PID 가 그대로라면 구 프로세스가 계속 답하고 있는 것이다. 새 코드는
+    # 아예 로드되지 않았으므로 dist 를 되돌리는 것은 무의미하고(코드 문제가 아니다),
+    # known-good 을 갱신하는 것은 위험하다. 별도 종료코드로 구분해 알린다.
+    if ($result.Bad.Count -eq 0 -and $result.Stale.Count -gt 0) {
+        Write-Host "   :$($result.Stale -join ', ') 은 응답하지만 재시작 전과 같은 프로세스다." -ForegroundColor Red
+        Write-Host ''
+        Write-Host '새 코드가 반영되지 않았다. 롤백은 하지 않는다 — 코드 문제가 아니라 교체 실패다.' -ForegroundColor Red
+        Write-Host 'known-good 은 갱신하지 않았다. 포트를 물고 있는 프로세스를 정리한 뒤 다시 시도하라.' -ForegroundColor Yellow
+        exit 3
+    }
+
+    Write-Host "   실패: :$($result.Bad -join ', ')" -ForegroundColor Red
 
     if ($NoRollback) {
         Write-Host '   -NoRollback 지정됨 — 자동 복구를 건너뛴다.' -ForegroundColor Yellow
@@ -238,6 +362,10 @@ try {
         exit 1
     }
 
+    # 롤백 재시작 직전의 소유자. 여기서도 "응답하지만 예전 프로세스" 를 성공으로
+    # 오판하면 복구됐다고 믿고 끝내버린다.
+    $ownersBeforeRollback = Get-PortOwners -Ports $ports
+
     foreach ($p in $ports) {
         $exit = Invoke-Pm2 @('restart', "claudito-$p", '--update-env')
         if ($exit -ne 0) {
@@ -245,7 +373,8 @@ try {
         }
     }
 
-    $stillBad = Wait-Healthy -Ports $ports
+    $rollbackResult = Wait-Healthy -Ports $ports -OwnersBefore $ownersBeforeRollback
+    $stillBad = @($rollbackResult.Bad) + @($rollbackResult.Stale)
 
     if ($stillBad.Count -eq 0) {
         Write-Host ''
