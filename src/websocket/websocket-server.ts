@@ -328,7 +328,7 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
    * finished. The chat looked like it had stopped mid-answer and jumped to "waiting
    * for your input", with the real output only appearing after a refresh.
    *
-   * Two consecutive misses (~60s of silence) still reaps a dead socket, and the
+   * A socket that answers nothing is still reaped on the third pass (~90s), and the
    * client backfills history on reconnect, so a reap is no longer lossy either.
    */
   private startHeartbeat(): void {

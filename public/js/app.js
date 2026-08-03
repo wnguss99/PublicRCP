@@ -3873,13 +3873,16 @@
 
   /**
    * @param {string} message
-   * @param {boolean} [fromRecovery] this call is the second half of a handoff
-   *   between sending and starting. It means the message is already on screen, and
-   *   that no further handoff may be attempted — the two recoveries are exact
-   *   opposites, so a server flapping between states would otherwise bounce the
-   *   same message back and forth forever.
+   * @param {boolean} [noHop] this call is already the second half of a handoff
+   *   between sending and starting, so it must not hand off again. The two
+   *   recoveries are exact opposites, and a server flapping between states would
+   *   otherwise bounce the same message back and forth forever.
+   * @param {boolean} [skipEcho] the message is already on screen. Deliberately
+   *   separate from noHop: coming *from* the start path nothing was echoed yet
+   *   (startInteractiveAgentWithMessage only appends on success), so conflating the
+   *   two silently hid the user's own message while the agent answered it.
    */
-  function doSendMessage(message, fromRecovery) {
+  function doSendMessage(message, noHop, skipEcho) {
     if (state.messageSending) return;
 
     var $input = $('#input-message');
@@ -3914,7 +3917,7 @@
     }
 
     // Add user message to conversation
-    if (!fromRecovery) {
+    if (!skipEcho) {
       appendMessage(state.selectedProjectId, userMessage);
     }
 
@@ -3931,7 +3934,12 @@
     // so sendMessage() cannot start silently refusing either.
     ComposerGate.hold('sending', {
       isLive: function() {
-        return jqXHR.state ? jqXHR.state() === 'pending' : false;
+        // Unknown means alive here, the opposite of the composer's bias. Releasing
+        // this lock clears state.messageSending, so guessing "finished" while the
+        // POST is still open would let the same message be sent twice. The TTL is
+        // what bounds it when we genuinely cannot tell.
+        if (!jqXHR.state) return true;
+        return jqXHR.state() === 'pending';
       },
       ttlMs: ComposerGate.TTL.SENDING,
       projectId: state.selectedProjectId
@@ -3949,7 +3957,7 @@
         // stale belief. Start the agent with the same message rather than making
         // the user read an error and press send again — the message is already
         // in hand and the intent is unambiguous.
-        if (code === 'AGENT_NOT_RUNNING' && !fromRecovery) {
+        if (code === 'AGENT_NOT_RUNNING' && !noHop) {
           updateProjectStatusById(state.selectedProjectId, 'stopped');
           // The bubble is already on screen from the optimistic append above, so
           // the start path must not echo it a second time — and must not hand it
@@ -4028,7 +4036,11 @@
     // same-project guard in .always() can no longer leave a project locked.
     ComposerGate.hold('starting', {
       isLive: function() {
-        return startXHR.state ? startXHR.state() === 'pending' : false;
+        // Same bias as 'sending': releasing clears state.agentStarting, and a
+        // second start attempt against a half-started agent is worse than waiting
+        // for the TTL.
+        if (!startXHR.state) return true;
+        return startXHR.state() === 'pending';
       },
       ttlMs: ComposerGate.TTL.STARTING,
       projectId: projectId
@@ -4090,7 +4102,9 @@
           updateProjectStatusById(projectId, 'running');
           state.agentStarting = false;
           ComposerGate.release('starting');
-          doSendMessage(message, true);
+          // noHop = true, skipEcho = false: nothing was echoed on this path, because
+          // this function only appends the user message once the start succeeds.
+          doSendMessage(message, true, false);
           return;
         }
 

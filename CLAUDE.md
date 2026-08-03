@@ -320,10 +320,14 @@ rules close the other two.
   `AGENT_NOT_RUNNING` (send → start the agent with the same message) and
   `AGENT_ALREADY_RUNNING` (start → deliver it to the running agent). Match on the
   **code**, never the sentence.
-- **One recovery hop, ever.** Those two handoffs are exact opposites, so a server
-  flapping between states would bounce the same message forever. `fromRecovery`
-  bounds it to a single hop and also suppresses the duplicate echo, since the
-  message is already on screen by then.
+- **One recovery hop, ever, and "no hop" is not the same as "already echoed".**
+  Those two handoffs are exact opposites, so a server flapping between states would
+  bounce the same message forever; each direction refuses to hand off a second time.
+  But the echo differs by direction: `doSendMessage` appends optimistically, while
+  `startInteractiveAgentWithMessage` appends only on success — so coming *from* the
+  start path nothing is on screen yet. `doSendMessage(message, noHop, skipEcho)`
+  keeps them separate. Conflating them hid the user's own message while the agent
+  answered it.
 - **The composer keeps its text unless the server accepted it.** Only `.done()`
   clears. `sendOneOffMessage()` used to clear before the request went out, so a
   failed send destroyed what the user had written.
