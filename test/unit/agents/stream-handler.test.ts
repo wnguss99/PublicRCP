@@ -1265,12 +1265,21 @@ describe('StreamHandler', () => {
     });
   });
   /**
-   * A rate limit used to be logged and nothing else. From the browser that was
-   * indistinguishable from a hang — spinner running, no message, for minutes — so
-   * the chat looked broken and users resent or restarted, neither of which helps.
+   * rate_limit_event is periodic quota *status*, not "you are throttled" — 98 were
+   * logged over a few days of normal, successful work, every one with an empty
+   * payload. Announcing them told users their usage had run out twice during a task
+   * that completed fine. Only a reported wait may reach the user.
    */
   describe('rate_limit_event', () => {
-    it('tells the user a rate limit was hit, with the wait', () => {
+    it('says nothing when the event carries no wait (the usual case)', () => {
+      handler.processLine(JSON.stringify({ type: 'rate_limit_event' }));
+      handler.processLine(JSON.stringify({ type: 'rate_limit_event', retry_after_ms: 0 }));
+      handler.processLine(JSON.stringify({ type: 'rate_limit_event', retry_after_ms: null }));
+
+      expect(messages.filter(m => m.type === 'system')).toHaveLength(0);
+    });
+
+    it('announces a real wait and tells the user not to resend', () => {
       handler.processLine(JSON.stringify({
         type: 'rate_limit_event',
         retry_after_ms: 42000,
@@ -1279,16 +1288,18 @@ describe('StreamHandler', () => {
       const system = messages.filter(m => m.type === 'system');
       expect(system).toHaveLength(1);
       expect(system[0]!.content).toContain('42');
-      // Says not to resend — resending is the natural but wrong reaction.
       expect(system[0]!.content).toContain('다시 보내지 않아도');
     });
 
-    it('still explains itself when no retry delay is given', () => {
-      handler.processLine(JSON.stringify({ type: 'rate_limit_event' }));
+    it('does not repeat the notice while that wait is still running', () => {
+      const line = JSON.stringify({ type: 'rate_limit_event', retry_after_ms: 60000 });
 
-      const system = messages.filter(m => m.type === 'system');
-      expect(system).toHaveLength(1);
-      expect(system[0]!.content).toContain('한도');
+      handler.processLine(line);
+      handler.processLine(line);
+      handler.processLine(line);
+
+      // The event is periodic; one wait deserves one notice.
+      expect(messages.filter(m => m.type === 'system')).toHaveLength(1);
     });
   });
 });

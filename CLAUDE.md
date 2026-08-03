@@ -347,12 +347,16 @@ rules close the other two.
   this (it previously existed for tests only, so anything reaching for `Utils` in the
   browser silently got `undefined`); it registers via `root.X =` because that is the
   pattern the validation gate uses to recognise a global.
-- **A silent wait must announce itself.** `rate_limit_event` was logged and nothing
-  more; from the browser a rate-limited turn was indistinguishable from a hang
-  (spinner running, no output, for minutes), so the reaction was to resend or
-  restart — neither helps. `handleRateLimitEvent()` emits a `system` message with
-  the retry delay and says not to resend. Any future "the agent is waiting on
-  something invisible" event needs the same treatment.
+- **A silent wait must announce itself — but only a real one.** `rate_limit_event`
+  is *not* a throttling signal: it is periodic quota status, and 98 of them were
+  logged across a few days of normal work, every one with an empty payload, while
+  the runs finished fine. Announcing each told users their usage had run out twice
+  during a task that succeeded — a false alarm about the one thing they cannot check
+  themselves, which is worse than silence. `handleRateLimitEvent()` therefore speaks
+  only when `retry_after_ms` reports an actual pause, and suppresses repeats inside
+  a wait it already announced. When adding a notice for any "the agent is waiting on
+  something invisible" event, verify against real payloads first that the event
+  means what its name suggests.
 
 **A session must not expire while it is being used** (2026-08-03). Sessions were a
 hard 7 days from login and `validateSession()` never extended them, so an active

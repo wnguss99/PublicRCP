@@ -92,6 +92,8 @@ export class StreamHandler extends EventEmitter {
   private lastEmittedQuestion = '';
   // Track whether any text was emitted in the current turn
   private turnHasEmittedText = false;
+  /** Suppresses repeats of the rate-limit notice inside a wait already announced. */
+  private rateLimitNoticeUntil = 0;
 
   constructor(
     private readonly logger: Logger,
@@ -862,26 +864,43 @@ export class StreamHandler extends EventEmitter {
   /**
    * Tell the user a rate limit was hit.
    *
-   * This used to only write a log line. From the browser the turn was
-   * indistinguishable from a hang: the working indicator kept spinning, no message
-   * arrived, and the wait can be minutes — so the chat looked broken and the
-   * natural reaction was to resend or restart, neither of which helps. An
-   * unexplained silence is the worst failure mode this UI has, so say what is
-   * happening even though nothing is wrong.
+   * Only when there is an actual wait to report.
+   *
+   * `rate_limit_event` is NOT "you are throttled". The CLI emits it as periodic
+   * quota *status*: 98 of these were logged across a few days of normal work, every
+   * single one with an empty payload, while the runs proceeded and finished
+   * normally. Announcing every one told users their usage had run out — twice in a
+   * single successful task — which is worse than saying nothing: it is a false alarm
+   * about the one thing they cannot verify themselves.
+   *
+   * So the message is tied to the only field that means a real pause,
+   * `retry_after_ms`. If the CLI ever does report a backoff, the user is told and
+   * told not to resend; otherwise this stays a log line. Repeats inside a wait
+   * already announced are suppressed, because the event is periodic and would
+   * otherwise repeat the same notice.
    */
   private handleRateLimitEvent(event: StreamEvent): void {
     const retryAfterMs = (event as unknown as { retry_after_ms?: number }).retry_after_ms;
 
     this.logger.info('Rate limit event received', { retryAfterMs });
 
-    const waitNote =
-      typeof retryAfterMs === 'number' && retryAfterMs > 0
-        ? ` 약 ${Math.max(1, Math.round(retryAfterMs / 1000))}초 뒤 자동으로 재시도합니다.`
-        : ' 잠시 후 자동으로 재시도합니다.';
+    if (typeof retryAfterMs !== 'number' || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (now < this.rateLimitNoticeUntil) {
+      return;
+    }
+
+    this.rateLimitNoticeUntil = now + retryAfterMs;
 
     this.emitMessage({
       type: 'system',
-      content: `[사용량 한도에 도달해 대기 중입니다.${waitNote} 다시 보내지 않아도 됩니다.]`,
+      content:
+        `[사용량 한도로 약 ${Math.max(1, Math.round(retryAfterMs / 1000))}초 대기 중입니다. ` +
+        '자동으로 재시도하니 다시 보내지 않아도 됩니다.]',
       timestamp: new Date().toISOString(),
     });
   }
