@@ -72,6 +72,35 @@ export interface ClaudeBinaryStartOptions {
 // Claude Code uses 200k token context by default
 const DEFAULT_MAX_CONTEXT_TOKENS = 200000;
 
+/**
+ * The next window size up, for models running with the long-context beta.
+ *
+ * The CLI does not report the context window anywhere in its stream — only the
+ * model id — so the limit has to be inferred. A measured G1 session reached ~635k
+ * tokens of context without compacting, which is proof the window was not 200k.
+ */
+const EXTENDED_MAX_CONTEXT_TOKENS = 1000000;
+
+/**
+ * Pick the window to measure against, correcting the assumption when the observed
+ * usage disproves it.
+ *
+ * Deliberately evidence-driven rather than a guess: exceeding the assumed window
+ * without a compaction cannot happen, so if it did, the assumption was wrong and the
+ * larger tier is the right denominator. This keeps the bar from reporting a
+ * nonsensical >100% — the alternative to inferring is showing a percentage we know
+ * to be false, which is worse than showing none.
+ */
+function resolveMaxContextTokens(configured: number | undefined, observedTokens: number): number {
+  const base = configured && configured > 0 ? configured : DEFAULT_MAX_CONTEXT_TOKENS;
+
+  if (observedTokens > base && base < EXTENDED_MAX_CONTEXT_TOKENS) {
+    return EXTENDED_MAX_CONTEXT_TOKENS;
+  }
+
+  return base;
+}
+
 export class ClaudeBinary implements Agent {
   readonly projectId: string;
   private readonly projectPath: string;
@@ -429,9 +458,11 @@ export class ClaudeBinary implements Agent {
       this.emitter.emit('waitingForInput', status);
     });
 
-    this.streamHandler.on('contextUsage', (_usage: ContextUsage) => {
-      // Set max context tokens
-      const maxTokens = this._limits.contextTokens || DEFAULT_MAX_CONTEXT_TOKENS;
+    this.streamHandler.on('contextUsage', (usage: ContextUsage) => {
+      // Set max context tokens. `limits` is not currently supplied by the agent
+      // manager, so this is normally the inferred default rather than a configured
+      // value — see resolveMaxContextTokens for why it self-corrects.
+      const maxTokens = resolveMaxContextTokens(this._limits.contextTokens, usage.totalTokens);
       this.streamHandler.setMaxContextTokens(maxTokens);
       // Emit updated usage (maxContextTokens now set) to surface to UI
       const updated = this.streamHandler.getContextUsage();

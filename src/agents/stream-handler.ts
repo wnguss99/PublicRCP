@@ -834,6 +834,20 @@ export class StreamHandler extends EventEmitter {
     }
   }
 
+  /**
+   * Context occupancy must count the cached prompt, which is nearly all of it.
+   *
+   * `totalTokens` was `input + output`. Claude Code caches aggressively, so the
+   * conversation arrives as `cache_read_input_tokens` and `input_tokens` holds only
+   * the uncached delta — a couple of tokens. Measured on a real G1 turn:
+   * input 2, output 115, cache_creation 405, cache_read 635,007. The old sum said
+   * 117 tokens against a 200,000 limit, so the indicator sat at 0% while the context
+   * was actually ~635k. It never moved, and compaction arrived with no warning —
+   * which is the one thing this bar exists to give.
+   *
+   * What occupies the window is input + both cache figures; output is added because
+   * the reply joins the context for the next turn.
+   */
   private updateContextUsage(usage: StreamEventUsage): void {
     if (!usage.input_tokens && !usage.output_tokens) {
       return;
@@ -847,7 +861,7 @@ export class StreamHandler extends EventEmitter {
     this.contextUsage = {
       inputTokens,
       outputTokens,
-      totalTokens: inputTokens + outputTokens,
+      totalTokens: inputTokens + cacheCreation + cacheRead + outputTokens,
       cacheCreationInputTokens: cacheCreation,
       cacheReadInputTokens: cacheRead,
       maxContextTokens: 0, // Will be set later

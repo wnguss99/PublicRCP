@@ -6469,21 +6469,50 @@
     }
   }
 
+  /**
+   * Show how full the context is.
+   *
+   * The guard used to be `!contextUsage.percentUsed`, which is also true at 0 — so a
+   * genuine 0% never appeared, and after a /compact the bar kept its old high value
+   * instead of dropping, because the function returned before touching the DOM. It
+   * has to test for a usable number, not for truthiness.
+   */
   function updateContextUsageIndicator(contextUsage) {
-    if (!contextUsage || !contextUsage.percentUsed) return;
-    var pct = Math.round(contextUsage.percentUsed);
+    if (!contextUsage || typeof contextUsage.percentUsed !== 'number') return;
+
+    var pct = Math.max(0, Math.min(100, Math.round(contextUsage.percentUsed)));
     var color = pct < 50 ? '#4ade80' : pct < 75 ? '#facc15' : pct < 90 ? '#f97316' : '#f87171';
     $('#context-usage-bar').css({ width: pct + '%', background: color });
     $('#context-usage-label').text(pct + '%').css('color', color);
+
+    // The percentage alone hides how much room is left in absolute terms, which is
+    // what decides whether a long task will survive without compacting.
+    var used = contextUsage.totalTokens || 0;
+    var max = contextUsage.maxContextTokens || 0;
+
+    if (max > 0) {
+      $('#context-usage-indicator').attr(
+        'title',
+        'Context ' + formatNumber(used) + ' / ' + formatNumber(max) +
+        ' (' + formatNumber(Math.max(0, max - used)) + ' left before compact)'
+      );
+    }
+
     $('#context-usage-indicator').removeClass('hidden');
   }
 
   $(document).on('click', '#context-usage-indicator', function() {
     var project = findProjectById(state.selectedProjectId);
     var isWaiting = project && project.isWaitingForInput;
-    if (state.agentStatus === 'running' && !isWaiting) {
+
+    // Was `state.agentStatus`, which this app never sets — so the guard silently did
+    // nothing and clicking the bar mid-turn queued a /compact into a busy agent. The
+    // project's own status is the value that exists.
+    if (project && project.status === 'running' && !isWaiting) {
+      showToast('작업이 끝난 뒤에 /compact 를 실행할 수 있습니다.', 'info');
       return;
     }
+
     $('#input-message').val('/compact');
     sendMessage();
   });

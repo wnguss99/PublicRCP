@@ -375,6 +375,18 @@ inactivity for the full window ends a session now. Credentials are pinned in `.e
 `getOrGenerateCredentials()` invents a random password on boot, which changes the
 credential fingerprint, drops every session, and locks everyone out.
 
+**Context usage counts the cached prompt** (2026-08-03). The bottom-right bar sat at
+0% forever and compaction always arrived unannounced, because three things were
+wrong at once: `totalTokens` was `input + output`, which with Claude Code's caching
+excludes essentially the whole context (measured: input 2, cache_read 635,007 — the
+old sum said 117); the denominator was hard-coded to 200k, and `limits` is never
+supplied so it could not be configured away; and the UI guard `!percentUsed` is true
+at 0, so a real 0% never rendered and a post-compact drop left the old value on
+screen. The CLI reports the model id but never the window size, so
+`resolveMaxContextTokens()` infers it and promotes to the 1M tier when observed usage
+exceeds the assumed one — exceeding the window without compacting is proof the
+assumption was wrong, which beats displaying a percentage known to be false.
+
 **Concurrency is per instance, not shared** (checked 2026-08-03): the limit lives in
 each process's `agents` map with a default of **5** (`MAX_CONCURRENT_AGENTS` is not
 set in `ecosystem.config.js`), so three users on three ports never queue each other

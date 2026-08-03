@@ -272,6 +272,45 @@ describe('StreamHandler', () => {
       expect(contextUsages[0]!.inputTokens).toBe(100);
       expect(contextUsages[0]!.outputTokens).toBe(50);
     });
+
+    /**
+     * totalTokens was input + output, which ignores the cached prompt — and with
+     * Claude Code's caching that IS the context. These are the real numbers from a
+     * G1 turn: the old sum reported 117 tokens for a context of ~635k, so the
+     * indicator sat at 0% and compaction always arrived unannounced.
+     */
+    it('counts the cached prompt as context, not just the uncached delta', () => {
+      handler.processLine(JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'Hi' }],
+          usage: {
+            input_tokens: 2,
+            output_tokens: 115,
+            cache_creation_input_tokens: 405,
+            cache_read_input_tokens: 635007,
+          },
+        },
+      }));
+
+      const usage = contextUsages[0]!;
+      expect(usage.totalTokens).toBe(2 + 405 + 635007 + 115);
+      // The figure the old code would have produced must not survive anywhere.
+      expect(usage.totalTokens).not.toBe(117);
+      expect(usage.cacheReadInputTokens).toBe(635007);
+    });
+
+    it('keeps reporting usage when only cached tokens moved', () => {
+      handler.processLine(JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'Hi' }],
+          usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 120000 },
+        },
+      }));
+
+      expect(contextUsages[0]!.totalTokens).toBe(120002);
+    });
   });
 
   describe('special tool handling', () => {
@@ -879,7 +918,10 @@ describe('StreamHandler', () => {
       }));
 
       expect(contextUsages).toHaveLength(1);
-      expect(contextUsages[0]!.totalTokens).toBe(1500);
+      // input + cache_creation + cache_read + output. This asserted 1500 (input +
+      // output only), which is what kept the context indicator pinned near zero:
+      // the cached prompt is the context, and it was being ignored.
+      expect(contextUsages[0]!.totalTokens).toBe(1800);
       expect(contextUsages[0]!.cacheCreationInputTokens).toBe(200);
       expect(contextUsages[0]!.cacheReadInputTokens).toBe(100);
     });
