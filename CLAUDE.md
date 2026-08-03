@@ -387,6 +387,28 @@ screen. The CLI reports the model id but never the window size, so
 exceeds the assumed one — exceeding the window without compacting is proof the
 assumption was wrong, which beats displaying a percentage known to be false.
 
+**A `/compact` that changed nothing on the bar is the bar's fault, not compaction's**
+(2026-08-03). Usage is only ever recomputed from a `usage` payload on an assistant
+message (`handleAssistantMessage` / `handleMessageStart` / `handleMessageDelta`).
+A compaction turn emits `status_change(compacting)` → `compact_boundary` →
+`system/init` → `result` and **no assistant message at all**, so nothing
+recalculated and the pre-compaction figure stayed on screen — `/compact` looked
+like a no-op after it had worked. The "Done." the user sees is claudito's own
+synthetic line from `handleResult` (`!turnHasEmittedText`), which is the same fact
+that means no usage arrived.
+
+- **`emitCompactionMessage()` is the single funnel for all three compaction
+  events and now marks the stored usage `awaitingRefresh`.** It is the only place
+  that knows the context shrank; it used to do nothing about the numbers.
+- **Do not invent a post-compaction size.** The CLI reports that a boundary was
+  crossed, never the new total. The UI shows an empty track and `–` until the next
+  turn measures it — a filled grey bar would read as "context is full", the
+  opposite of what happened. `updateContextUsage()` clears the flag on any real
+  measurement.
+- **Read `usage` before the empty-content guard.** `handleAssistantMessage` used
+  to `return` on `!message.content` *before* reading usage, so a tool-only turn
+  threw its usage away with the empty body.
+
 **Concurrency is per instance, not shared** (checked 2026-08-03): the limit lives in
 each process's `agents` map with a default of **5** (`MAX_CONCURRENT_AGENTS` is not
 set in `ecosystem.config.js`), so three users on three ports never queue each other

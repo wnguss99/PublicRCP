@@ -311,6 +311,96 @@ describe('StreamHandler', () => {
 
       expect(contextUsages[0]!.totalTokens).toBe(120002);
     });
+
+    /**
+     * The usage read used to sit after an early return on empty content, so a
+     * message carrying usage but no text had its usage discarded with the body.
+     * A tool-only turn produces exactly that shape.
+     */
+    it('reads usage from a message that carries no text', () => {
+      handler.processLine(JSON.stringify({
+        type: 'assistant',
+        message: {
+          usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 90000 },
+        },
+      }));
+
+      expect(contextUsages).toHaveLength(1);
+      expect(contextUsages[0]!.totalTokens).toBe(90007);
+    });
+  });
+
+  /**
+   * `/compact` emits no assistant message, so no usage arrives and nothing else
+   * recalculates. The pre-compaction figure stayed on screen and /compact looked
+   * like it had done nothing — the CLI never reports the new size, so the only
+   * honest answer is "unknown until the next turn measures it".
+   */
+  describe('context usage after compaction', () => {
+    const feedUsage = (cacheRead: number): void => {
+      handler.processLine(JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'working' }],
+          usage: { input_tokens: 2, output_tokens: 10, cache_read_input_tokens: cacheRead },
+        },
+      }));
+    };
+
+    const compactBoundary = (): void => {
+      handler.processLine(JSON.stringify({
+        type: 'system',
+        subtype: 'compact_boundary',
+      }));
+    };
+
+    it('marks the stored usage as awaiting refresh', () => {
+      feedUsage(635000);
+      expect(handler.getContextUsage()!.awaitingRefresh).toBe(false);
+
+      compactBoundary();
+
+      expect(handler.getContextUsage()!.awaitingRefresh).toBe(true);
+    });
+
+    it('emits the stale state so the browser stops showing the old number', () => {
+      feedUsage(635000);
+      const before = contextUsages.length;
+
+      compactBoundary();
+
+      expect(contextUsages.length).toBe(before + 1);
+      expect(contextUsages[contextUsages.length - 1]!.awaitingRefresh).toBe(true);
+    });
+
+    it('clears the stale state once a real turn reports usage', () => {
+      feedUsage(635000);
+      compactBoundary();
+      expect(handler.getContextUsage()!.awaitingRefresh).toBe(true);
+
+      feedUsage(40000);
+
+      const usage = handler.getContextUsage()!;
+      expect(usage.awaitingRefresh).toBe(false);
+      expect(usage.totalTokens).toBe(40012);
+    });
+
+    it('does not re-emit when compact and compact_boundary both arrive', () => {
+      feedUsage(635000);
+      const before = contextUsages.length;
+
+      handler.processLine(JSON.stringify({ type: 'system', subtype: 'compact' }));
+      compactBoundary();
+
+      expect(contextUsages.length).toBe(before + 1);
+    });
+
+    it('does nothing when no usage was ever measured', () => {
+      compactBoundary();
+
+      expect(contextUsages).toHaveLength(0);
+      expect(handler.getContextUsage()).toBeNull();
+    });
   });
 
   describe('special tool handling', () => {

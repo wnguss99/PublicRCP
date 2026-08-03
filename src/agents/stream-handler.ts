@@ -282,13 +282,20 @@ export class StreamHandler extends EventEmitter {
    */
   private handleAssistantMessage(event: StreamEvent): void {
     const message = this.extractAssistantMessage(event);
-    if (!message?.content) {
+    if (!message) {
       return;
     }
 
-    // Update context usage if available
+    // Read usage before the content guard. It used to sit after an early return on
+    // empty content, so a message carrying usage but no text — which is exactly
+    // what a tool-only or post-compaction turn can produce — had its usage thrown
+    // away along with the empty body.
     if (message.usage) {
       this.updateContextUsage(message.usage);
+    }
+
+    if (!message.content) {
+      return;
     }
 
     // Process each content block
@@ -866,6 +873,8 @@ export class StreamHandler extends EventEmitter {
       cacheReadInputTokens: cacheRead,
       maxContextTokens: 0, // Will be set later
       percentUsed: 0, // Will be calculated later
+      // A real measurement always clears the post-compaction "unknown" state.
+      awaitingRefresh: false,
     };
 
     this.emit('contextUsage', this.contextUsage);
@@ -1039,6 +1048,27 @@ export class StreamHandler extends EventEmitter {
       content: summary,
       timestamp: new Date().toISOString(),
     });
+
+    this.markContextUsageStale();
+  }
+
+  /**
+   * Say "unknown" rather than keep showing a context that was just discarded.
+   *
+   * This is the only point that knows compaction happened, and it used to do
+   * nothing about the usage figures. A `/compact` turn emits no assistant
+   * message, so no `usage` arrives and nothing else recalculates — the
+   * pre-compaction number stayed on screen and `/compact` looked like a no-op
+   * even though it had worked. The CLI does not report the post-compaction size,
+   * so the honest answer is that we do not know it until the next real turn.
+   */
+  private markContextUsageStale(): void {
+    if (!this.contextUsage || this.contextUsage.awaitingRefresh) {
+      return;
+    }
+
+    this.contextUsage = { ...this.contextUsage, awaitingRefresh: true };
+    this.emit('contextUsage', this.contextUsage);
   }
 
   private emitResultMessage(result: string, isError: boolean): void {

@@ -6480,6 +6480,20 @@
   function updateContextUsageIndicator(contextUsage) {
     if (!contextUsage || typeof contextUsage.percentUsed !== 'number') return;
 
+    // Compaction discarded the context these numbers describe, and the CLI does
+    // not report the new size. Showing the old figure made /compact look like it
+    // had done nothing; show "unknown" until the next turn measures it.
+    // Empty track, not a full grey one: a filled bar reads as "context is full",
+    // which is the opposite of what just happened. The dash carries the meaning.
+    if (contextUsage.awaitingRefresh) {
+      $('#context-usage-bar').css({ width: '0%', background: '#3f3f46' });
+      $('#context-usage-label').text('–').css('color', '#a1a1aa');
+      $('#context-usage-indicator')
+        .attr('title', '컨텍스트가 압축됐습니다 — 다음 응답에서 사용량이 갱신됩니다')
+        .removeClass('hidden');
+      return;
+    }
+
     var pct = Math.max(0, Math.min(100, Math.round(contextUsage.percentUsed)));
     var color = pct < 50 ? '#4ade80' : pct < 75 ? '#facc15' : pct < 90 ? '#f97316' : '#f87171';
     $('#context-usage-bar').css({ width: pct + '%', background: color });

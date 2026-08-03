@@ -49,6 +49,16 @@ export interface ContextUsage {
   cacheReadInputTokens: number;
   maxContextTokens: number;
   percentUsed: number;
+  /**
+   * The numbers above describe a context that no longer exists.
+   *
+   * Compaction shrinks the window, but the CLI never reports the new size — it
+   * only says a boundary was crossed. Keeping the pre-compaction figures on
+   * screen made `/compact` look like it had done nothing; inventing a number
+   * would defeat the one purpose of this indicator, which is to be trusted.
+   * Set until the next turn reports real usage.
+   */
+  awaitingRefresh?: boolean;
 }
 
 export interface AskUserQuestionData {
