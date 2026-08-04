@@ -80,6 +80,8 @@ export class ProcessManager extends EventEmitter {
   private process: ChildProcess | null = null;
   private processInfo: ProcessInfo | null = null;
   private isShuttingDown = false;
+  /** Kept so the per-spawn SIGINT/SIGTERM listeners can be removed again. */
+  private signalHandler: (() => void) | null = null;
   private readonly isWindows: boolean;
 
   constructor(
@@ -300,12 +302,33 @@ export class ProcessManager extends EventEmitter {
     this.process.on('exit', this.handleExit.bind(this));
     this.process.on('error', this.handleError.bind(this));
 
-    // Handle process termination signals
-    process.once('SIGINT', () => { void this.stop(); });
-    process.once('SIGTERM', () => { void this.stop(); });
+    // Handle process termination signals.
+    //
+    // These are registered per spawn, so the reference has to be kept and removed
+    // with the child. Before, every agent start added two more listeners that
+    // nothing ever took off `process`: after a few starts Node logs
+    // `MaxListenersExceededWarning: 11 SIGINT listeners added`, and each stale
+    // closure retains a dead ProcessManager for the life of the instance.
+    this.removeSignalListeners();
+
+    this.signalHandler = (): void => { void this.stop(); };
+    process.once('SIGINT', this.signalHandler);
+    process.once('SIGTERM', this.signalHandler);
+  }
+
+  private removeSignalListeners(): void {
+    if (!this.signalHandler) return;
+
+    process.off('SIGINT', this.signalHandler);
+    process.off('SIGTERM', this.signalHandler);
+    this.signalHandler = null;
   }
 
   private removeProcessListeners(): void {
+    // Signal listeners live on the global `process`, so they must come off even
+    // when the child is already gone — otherwise cleanup() leaks them.
+    this.removeSignalListeners();
+
     if (!this.process) return;
 
     this.process.removeAllListeners('exit');

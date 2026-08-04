@@ -1671,7 +1671,18 @@ export class DefaultAgentManager implements AgentManager {
 
   private trackMessageSave<T>(promise: Promise<T>): Promise<T> {
     this.pendingMessageSaves.add(promise);
-    void promise.finally(() => this.pendingMessageSaves.delete(promise));
+
+    // `.finally()` returns a *new* promise that inherits the rejection, and `void`
+    // left it unhandled — so one failed conversation write (a transient EPERM on
+    // the rename, which this host produces regularly) became an unhandled
+    // rejection and terminated the instance. The caller still owns the original
+    // promise's rejection; this catch only silences the bookkeeping copy.
+    promise
+      .finally(() => this.pendingMessageSaves.delete(promise))
+      .catch(() => {
+        // Owned by the caller of trackMessageSave().
+      });
+
     return promise;
   }
 

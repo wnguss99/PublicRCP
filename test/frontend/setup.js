@@ -9,6 +9,18 @@ const path = require('path');
 // away from the real gate's contract without any test noticing.
 global.ComposerGate = require('../../public/js/modules/composer-gate.js');
 
+// Same reasoning for ModelCatalog: it is the only source of model ids for the
+// frontend and index.html loads it for every page, so modules reference the bare
+// global. Suites that did not stub it failed with `ModelCatalog is not defined`
+// even though the product was fine. Load the real module rather than a stub so a
+// module cannot drift away from the catalog's contract unnoticed. Seed it per
+// suite with ModelCatalog.setModels().
+//
+// Required for its side effect only — unlike composer-gate this is a plain
+// browser IIFE that assigns window.ModelCatalog and exports nothing, so
+// assigning the return value would clobber the real object with {}.
+require('../../public/js/modules/model-catalog.js');
+
 beforeEach(() => {
   // No lock may survive into another test.
   global.ComposerGate._reset();

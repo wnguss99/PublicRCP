@@ -314,6 +314,13 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
       verifyClient: (info, callback): void => this.verifyClient(info, callback),
     });
     this.wss.on('connection', (ws) => this.handleConnection(ws));
+
+    // Same reason as the per-socket handler: an unhandled 'error' on the server
+    // emitter terminates the process. A failed upgrade must not cost the instance.
+    this.wss.on('error', (err: Error) => {
+      this.logger.error('WebSocket server error', { error: err.message });
+    });
+
     this.startHeartbeat();
   }
 
@@ -438,6 +445,14 @@ export class DefaultWebSocketServer implements ProjectWebSocketServer {
 
     ws.on('message', (data) => this.handleMessage(ws, String(data)));
     ws.on('close', () => this.handleDisconnect(ws));
+
+    // A ws socket with no 'error' listener throws ERR_UNHANDLED_ERROR out of the
+    // EventEmitter, which takes the whole instance down. ECONNRESET is routine
+    // here: the UI is reached over Tailscale from phones, and the heartbeat pings
+    // sockets that may already be half-open. Log and let 'close' do the cleanup.
+    ws.on('error', (err: Error) => {
+      this.logger.warn('WebSocket client error', { error: err.message });
+    });
   }
 
   private handleMessage(ws: WebSocket, rawData: string): void {

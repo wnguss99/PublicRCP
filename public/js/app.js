@@ -5745,9 +5745,19 @@
       });
   }
 
-  function handleRalphLoopMessage(type, data) {
+  /**
+   * @param {string} type
+   * @param {object} data     the frame's `data` payload
+   * @param {string} [frameProjectId]  the frame's top-level projectId
+   *
+   * The guard used to read `data.projectId`, which the server never puts there —
+   * it sends projectId at the top level of the frame. So the check was dead and
+   * a frame still in flight for the project the user just left was applied to the
+   * one now on screen.
+   */
+  function handleRalphLoopMessage(type, data, frameProjectId) {
     // Only show messages for the selected project
-    if (data.projectId && data.projectId !== state.selectedProjectId) {
+    if (frameProjectId && frameProjectId !== state.selectedProjectId) {
       return;
     }
 
@@ -5769,8 +5779,9 @@
           state.currentRalphLoopId = null;
           state.ralphLoopCurrentIteration = null;
           state.ralphLoopMaxTurns = null;
-          // Mark project as stopped when Ralph Loop goes idle or fails
-          updateProjectStatusById(state.selectedProjectId, 'stopped');
+          // Mark the project the loop belongs to as stopped — not whichever one
+          // happens to be selected.
+          updateProjectStatusById(frameProjectId || state.selectedProjectId, 'stopped');
           return; // Don't show idle/failed status changes
         }
 
@@ -5846,28 +5857,47 @@
         state.ralphLoopMaxTurns = null;
         updateRalphLoopControls(null);
         // Mark project as stopped
-        updateProjectStatusById(state.selectedProjectId, 'stopped');
+        updateProjectStatusById(frameProjectId || state.selectedProjectId, 'stopped');
 
         // Clear the conversation history after completion
         // Delay clearing to ensure the completion message is shown first
+        //
+        // projectId is captured here, not inside the timeout. It used to read
+        // state.selectedProjectId a second later, so switching project during
+        // that second sent the clear to whichever project was then on screen —
+        // wiping the history of a project the loop had nothing to do with, with
+        // no way to get it back.
+        var completedProjectId = frameProjectId || state.selectedProjectId;
+
         setTimeout(function() {
-          var projectId = state.selectedProjectId;
+          var projectId = completedProjectId;
           $.ajax({
             url: '/api/projects/' + projectId + '/conversation/clear',
             method: 'POST'
           }).done(function() {
-            // Clear local state
+            state.conversations[projectId] = [];
+
+            // The on-screen conversation state belongs to whatever is selected
+            // now, which may no longer be this project. Nulling it out here would
+            // blank the wrong project's header and stats.
+            if (projectId !== state.selectedProjectId) {
+              return;
+            }
+
             state.currentConversationId = null;
             state.currentConversationStats = null;
             state.currentConversationMetadata = null;
             state.currentConversationLabel = null;
-            state.conversations[projectId] = [];
             renderConversation(projectId);
             ConversationHistoryModule.updateStats();
             showToast('Ralph Loop completed - history cleared', 'info');
           }).fail(function() {
             // Even if server fails, clear local state
             state.conversations[projectId] = [];
+
+            if (projectId !== state.selectedProjectId) {
+              return;
+            }
             renderConversation(projectId);
             ConversationHistoryModule.updateStats();
           });
@@ -6261,7 +6291,8 @@
       case 'ralph_loop_reviewer_complete':
       case 'ralph_loop_error':
       case 'ralph_loop_tool_use':
-        handleRalphLoopMessage(message.type, message.data);
+        // The frame carries projectId at the top level, never inside `data`.
+        handleRalphLoopMessage(message.type, message.data, message.projectId);
         if (RalphLoopModule) {
           RalphLoopModule.handleWebSocketMessage(message.type, message.data);
         }

@@ -73,6 +73,16 @@ describe('OneOffToolbarModule', () => {
       renderModalContent: jest.fn().mockReturnValue('<div>tasks content</div>')
     };
 
+    // The toolbar no longer knows any model ids — it renders whatever
+    // ModelCatalog holds (backend src/config/models.ts is the single source).
+    // Seeding deliberately fake ids asserts that contract instead of pinning the
+    // catalogue's current contents, which is what made these tests rot.
+    global.ModelCatalog.setModels([
+      { id: 'test-model-a', displayName: 'Test Model A' },
+      { id: 'test-model-b', displayName: 'Test Model B' }
+    ]);
+    global.ModelCatalog.setDefault('test-model-a');
+
     global.$ = createMockJQuery();
     global.document.createTreeWalker = jest.fn().mockReturnValue({
       nextNode: jest.fn().mockReturnValue(null)
@@ -119,13 +129,14 @@ describe('OneOffToolbarModule', () => {
       expect(html).toContain('Plan');
     });
 
-    it('should return HTML with model selector', () => {
+    it('should return HTML with model selector built from the catalog', () => {
       const html = OneOffToolbarModule.generateToolbarHtml('oneoff-1');
 
       expect(html).toContain('oneoff-model-select');
-      expect(html).toContain('Opus 4.6');
-      expect(html).toContain('Sonnet 4.5');
-      expect(html).toContain('Haiku 4.5');
+      expect(html).toContain('value="test-model-a"');
+      expect(html).toContain('Test Model A');
+      expect(html).toContain('value="test-model-b"');
+      expect(html).toContain('Test Model B');
     });
 
     it('should return HTML with font size controls', () => {
@@ -272,17 +283,28 @@ describe('OneOffToolbarModule', () => {
 
   describe('syncModel', () => {
     it('should update all oneoff model selectors', () => {
-      OneOffToolbarModule.syncModel('claude-sonnet-4-5-20250929');
+      OneOffToolbarModule.syncModel('test-model-b');
 
       expect(global.$).toHaveBeenCalledWith('.oneoff-model-select');
+      const mockEl = global.$();
+      expect(mockEl.val).toHaveBeenCalledWith('test-model-b');
     });
 
-    it('should default to sonnet when null', () => {
+    // An id the catalog does not know must not reach the <select>: the browser
+    // blanks an unknown value, leaving the user looking at an empty dropdown.
+    it('should fall back to the catalog default for an unknown id', () => {
+      OneOffToolbarModule.syncModel('retired-model-id');
+
+      const mockEl = global.$();
+      expect(mockEl.val).toHaveBeenCalledWith('test-model-a');
+    });
+
+    it('should fall back to the catalog default when null', () => {
       OneOffToolbarModule.syncModel(null);
 
       expect(global.$).toHaveBeenCalledWith('.oneoff-model-select');
       const mockEl = global.$();
-      expect(mockEl.val).toHaveBeenCalledWith('claude-sonnet-4-6');
+      expect(mockEl.val).toHaveBeenCalledWith('test-model-a');
     });
   });
 

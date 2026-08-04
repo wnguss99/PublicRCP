@@ -75,6 +75,12 @@ export async function createZipArchive(filePaths: string[], archiveName?: string
       resolve({ zipPath, filename, fileCount: fileStats.length, totalSize, skipped });
     });
 
+    // Only 'close' was handled. A write-stream failure (full or read-only volume,
+    // the file locked by antivirus) emits 'error' and never 'close', so this
+    // promise never settled and the caller — an e-mail send with attachments —
+    // hung forever with nothing to report.
+    output.on('error', reject);
+
     archive.on('error', reject);
     archive.pipe(output);
 

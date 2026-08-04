@@ -607,4 +607,63 @@ describe('ProcessManager', () => {
       expect(passedEnv.ANTHROPIC_API_KEY).toBe('sk-ant-...');
     });
   });
+
+  /**
+   * setupProcessListeners registers SIGINT/SIGTERM on the global `process` for
+   * every spawn, but removeProcessListeners only ever touched the *child*. Each
+   * agent start therefore left two more listeners behind, each retaining a dead
+   * ProcessManager — Node starts warning at 11 (`MaxListenersExceededWarning`),
+   * and a long-lived instance accumulates hundreds. The suite's
+   * `process.setMaxListeners(50)` was papering over exactly this.
+   */
+  describe('signal listener hygiene', () => {
+    it('should not accumulate signal listeners across spawn/exit cycles', () => {
+      const beforeInt = process.listenerCount('SIGINT');
+      const beforeTerm = process.listenerCount('SIGTERM');
+
+      for (let i = 0; i < 12; i++) {
+        const child = createMockChildProcess(2000 + i);
+        const manager = new ProcessManager(createMockLogger(), createMockSpawner(child));
+
+        manager.spawn('claude', [], '/tmp/project');
+        // handleExit -> cleanup -> removeProcessListeners
+        child.emit('exit', 0, null);
+        manager.removeAllListeners();
+      }
+
+      expect(process.listenerCount('SIGINT')).toBe(beforeInt);
+      expect(process.listenerCount('SIGTERM')).toBe(beforeTerm);
+    });
+
+    it('should hold exactly one signal listener while a process is running', () => {
+      const beforeInt = process.listenerCount('SIGINT');
+      const beforeTerm = process.listenerCount('SIGTERM');
+
+      pm.spawn('claude', [], '/tmp/project');
+
+      expect(process.listenerCount('SIGINT')).toBe(beforeInt + 1);
+      expect(process.listenerCount('SIGTERM')).toBe(beforeTerm + 1);
+
+      mockChild.emit('exit', 0, null);
+
+      expect(process.listenerCount('SIGINT')).toBe(beforeInt);
+      expect(process.listenerCount('SIGTERM')).toBe(beforeTerm);
+    });
+
+    it('should not stack listeners when the same manager is reused after an exit', () => {
+      const beforeInt = process.listenerCount('SIGINT');
+
+      // spawn() refuses to run twice, so a reused manager always goes through an
+      // exit first — the cycle a long-lived instance actually performs.
+      for (let i = 0; i < 5; i++) {
+        const child = createMockChildProcess(3000 + i);
+        mockSpawner.spawn.mockReturnValueOnce(child);
+
+        pm.spawn('claude', [], '/tmp/project');
+        child.emit('exit', 0, null);
+      }
+
+      expect(process.listenerCount('SIGINT')).toBe(beforeInt);
+    });
+  });
 });

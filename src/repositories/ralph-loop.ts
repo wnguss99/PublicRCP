@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { generateUUID, getLogger, Logger } from '../utils';
+import { PendingOperationsTracker, WriteQueueManager } from '../utils/operation-tracking';
 import {
   RalphLoopState,
   RalphLoopRepository,
@@ -74,30 +75,35 @@ export class FileRalphLoopRepository implements RalphLoopRepository {
   private readonly projectPathResolver: ProjectPathResolver;
   private readonly fileSystem: RalphLoopFileSystem;
   private readonly cache: Map<string, RalphLoopState> = new Map();
-  private readonly pendingOperations: Set<Promise<unknown>> = new Set();
-  private readonly writeQueues: Map<string, Promise<void>> = new Map();
+  // The shared managers, not a private copy. This class used to reimplement both
+  // and kept the pre-fix versions: the write lock deleted the queue entry
+  // unconditionally, so an operation queued behind another was abandoned as the
+  // lock holder finished and the next caller ran *concurrently* with it — two
+  // read-modify-writes on the same state.json, and the loser's update silently
+  // lost. Tracking used `void promise.finally()`, whose derived promise inherits
+  // the rejection and so turned one failed write into a process-killing unhandled
+  // rejection. `flush()` used Promise.all, which abandons the rest of the queue on
+  // the first failure. All three are already fixed and documented in
+  // utils/operation-tracking.ts, which conversation.ts uses.
+  private readonly pendingOperations: PendingOperationsTracker;
+  private readonly writeQueues: WriteQueueManager<string>;
   private readonly logger: Logger;
 
   constructor(config: FileRalphLoopRepositoryConfig) {
+    this.pendingOperations = new PendingOperationsTracker('ralph-loop-repo');
+    this.writeQueues = new WriteQueueManager('ralph-loop-repo');
     this.projectPathResolver = config.projectPathResolver;
     this.fileSystem = config.fileSystem || defaultFileSystem;
     this.logger = getLogger('ralph-loop-repository');
   }
 
   async flush(): Promise<void> {
-    while (this.pendingOperations.size > 0) {
-      await Promise.all(Array.from(this.pendingOperations));
-    }
-
-    if (this.writeQueues.size > 0) {
-      await Promise.all(Array.from(this.writeQueues.values()));
-    }
+    await this.pendingOperations.flush();
+    await this.writeQueues.flush();
   }
 
   private trackOperation<T>(promise: Promise<T>): Promise<T> {
-    this.pendingOperations.add(promise);
-    void promise.finally(() => this.pendingOperations.delete(promise));
-    return promise;
+    return this.pendingOperations.track(promise);
   }
 
   private async withTaskLock<T>(
@@ -105,17 +111,7 @@ export class FileRalphLoopRepository implements RalphLoopRepository {
     taskId: string,
     operation: () => Promise<T>
   ): Promise<T> {
-    const key = this.getCacheKey(projectId, taskId);
-    const previousOperation = this.writeQueues.get(key) || Promise.resolve();
-
-    const newOperation = previousOperation.then(operation, operation);
-    const tracked = newOperation.then(
-      () => { this.writeQueues.delete(key); },
-      () => { this.writeQueues.delete(key); },
-    );
-    this.writeQueues.set(key, tracked);
-
-    return newOperation;
+    return this.writeQueues.withLock(this.getCacheKey(projectId, taskId), operation);
   }
 
   private getCacheKey(projectId: string, taskId: string): string {
