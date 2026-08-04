@@ -29,11 +29,11 @@
  */
 
 import { execSync, spawn } from 'node:child_process';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
@@ -208,6 +208,35 @@ function instanceConfig() {
     }
 
     checked++;
+  }
+
+  // 이 게이트가 띄우는 스모크 서버도 같은 규칙을 지켜야 한다.
+  //
+  // 2026-08-04: serverSmoke() 가 CLAUDITO_HOME 을 안 넘겨서 ~/.claudito(4000번의
+  // 실사용 홈)로 붙었고, 기동 시 고아 정리가 그 홈의 pids.json 에 적힌 *살아있는*
+  // Claude 프로세스를 전부 죽였다. validate 를 돌릴 때마다 사용자의 에이전트가
+  // 죽고 여러 프로젝트에 error 배지가 붙었다. 위 루프가 ecosystem 의 모든
+  // 인스턴스에 대해 검사하는 바로 그 조건을, 정작 자기 자신은 어기고 있었다.
+  // 소스를 정적으로 확인해 다시 빠뜨릴 수 없게 한다.
+  // 함수 이름으로 구간을 자르면 안 된다: 이 검사 코드 자체가 그 이름을 문자열로
+  // 들고 있어서 indexOf 가 자기 자신을 먼저 찾고, 엉뚱한 구간을 보고 오탐이 난다.
+  // 실제 spawn 호출을 기준으로 잡는다 — 이 문자열은 스모크 실행부에만 있다.
+  try {
+    const selfSource = readFileSync(join(ROOT, 'scripts', 'validate.mjs'), 'utf8');
+    const spawnBlock = selfSource.match(/spawn\(process\.execPath[\s\S]{0,600}?stdio:/);
+
+    if (!spawnBlock) {
+      fail('serverSmoke() 의 서버 spawn 호출을 찾지 못했다 — 이 검사를 갱신하라.');
+      failures.push('instance-config');
+    } else if (!/CLAUDITO_HOME\s*:/.test(spawnBlock[0])) {
+      fail(
+        'serverSmoke() 가 CLAUDITO_HOME 을 넘기지 않는다 — 스모크 서버가 실사용 홈에 붙어 ' +
+        '기동 시 고아 정리로 살아있는 Claude 프로세스를 죽인다.'
+      );
+      failures.push('instance-config');
+    }
+  } catch {
+    // 자기 소스를 못 읽는 환경이면 건너뛴다.
   }
 
   // 평문 비밀번호 파일이 git 에 추적되면 안 된다.
@@ -417,12 +446,41 @@ function findFreePort() {
   });
 }
 
+// 스모크 서버는 반드시 자기만의 CLAUDITO_HOME 을 가져야 한다.
+//
+// 예전에는 env 에 CLAUDITO_HOME 을 넣지 않아서 getDataDirectory() 가 기본값
+// ~/.claudito 로 떨어졌다. 그건 4000번 인스턴스의 *실사용* 데이터 디렉터리다.
+// 서버는 기동 시 cleanupOrphanProcesses() 를 돌려 그 홈의 pids.json 을 읽고
+// 거기 적힌 PID 마다 SIGTERM → 1초 → SIGKILL 을 보낸다. 그 PID 들은 고아가
+// 아니라 *지금 돌고 있는* Claude 프로세스였다.
+//
+// 그래서 `npm run validate` 를 돌릴 때마다 4000번의 에이전트가 전부 죽었고,
+// 사용자에게는 아무 일도 안 했는데 여러 프로젝트가 1초 간격으로
+// "Claude agent exited with code 1" 을 띄우며 error 배지가 붙는 것으로 보였다.
+// 로그의 지문: 1초 간격 순차 종료 + code:1/signal:null(Windows 강제 종료) +
+// 포트 4000 에서만 발생(4001/4002 는 자기 홈을 갖고 있어 0건).
+//
+// 아이러니하게도 이 파일의 0단계는 "CLAUDITO_HOME 이 없다 — 인스턴스끼리
+// 데이터를 공유해 버린다" 를 검사한다. 그 규칙을 위반한 유일한 프로세스가
+// 게이트 자신이 띄우는 이 스모크 서버였다.
+function createSmokeHome() {
+  const dir = mkdtempSync(join(tmpdir(), 'claudito-smoke-'));
+  return dir;
+}
+
 async function serverSmoke() {
   head('4. 서버 부팅 스모크 (임시 포트 GET /login 200)');
   const PORT = await findFreePort();
+  const smokeHome = createSmokeHome();
   const child = spawn(process.execPath, ['-r', 'dotenv/config', 'dist/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', NODE_ENV: 'production' },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      HOST: '127.0.0.1',
+      NODE_ENV: 'production',
+      CLAUDITO_HOME: smokeHome,
+    },
     stdio: 'pipe',
     windowsHide: true,
   });
@@ -445,6 +503,12 @@ async function serverSmoke() {
     if (process.platform === 'win32') execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
     else process.kill(-child.pid, 'SIGKILL');
   } catch { /* already gone */ }
+
+  // 스모크 홈은 매 실행마다 새로 만들므로 지워야 %TEMP% 에 쌓이지 않는다.
+  // 지우지 못해도 게이트를 실패시키지는 않는다 — 검증 결과와 무관한 뒷정리다.
+  try {
+    rmSync(smokeHome, { recursive: true, force: true });
+  } catch { /* 다음 실행이 새 디렉터리를 쓴다 */ }
 
   if (status && status >= 200 && status < 500) {
     ok(`서버 정상 부팅 + /login 응답 ${status}`);

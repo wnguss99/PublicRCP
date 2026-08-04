@@ -597,6 +597,43 @@ instances kept answering from the code in memory. The health check said "fine"
 and a broken `dist` was saved as known-good — the rollback then restored the
 broken build and took all three ports down. Process health is not disk health.
 
+### Anything that boots the compiled server must set its own `CLAUDITO_HOME`
+
+**`npm run validate` was killing the live agents** (2026-08-04). Its boot smoke
+test spawned `dist/index.js` with only `PORT`/`HOST`/`NODE_ENV`, so
+`getDataDirectory()` fell back to `~/.claudito` — port 4000's *real* data
+directory. `ExpressHttpServer.start()` then ran `cleanupOrphanProcesses()`, read
+that home's `pids.json`, and sent `SIGTERM` → 1 s → `SIGKILL` to every PID in it.
+Those PIDs were not orphans; they were the Claude processes running right then.
+
+So every validate run silently killed the user's agents. What they saw was several
+projects flipping to an Error badge with `Claude agent exited with code 1`, having
+done nothing themselves. The log fingerprint is unmistakable once you know it:
+
+- exits **one second apart in sequence** (the SIGTERM→sleep→SIGKILL loop), not
+  simultaneously
+- `code: 1, signal: null` — a Windows force-kill reports a code, never a signal
+- the dying processes' lifetimes are all *different* (17 h, 17 h, 2.5 h), so it
+  cannot be a per-process timeout — one global event killed them
+- **only port 4000**, because it owns `~/.claudito`; 4001/4002 have their own
+  homes and recorded zero occurrences
+- no CLI stderr at all, and no `Server started` near the event, so neither the CLI
+  nor a restart caused it
+- the `Killing orphan process` lines are missing from the instance log because the
+  smoke server writes them to the validate run's own stdout
+
+Step 0 of `validate.mjs` already fails any ecosystem instance that omits
+`CLAUDITO_HOME` ("인스턴스끼리 데이터를 공유해 버린다"). The one process breaking
+that rule was the gate's own smoke server. It now gets an `mkdtempSync` home that
+is removed afterwards, and step 0 statically asserts the spawn still passes
+`CLAUDITO_HOME` — anchored on `spawn(process.execPath`, **not** on the function
+name, because the check's own source contains that name and `indexOf` would find
+itself first and silently pass.
+
+`npm start` has the same shape (no `CLAUDITO_HOME` → `~/.claudito`); that is
+intended for a single-instance run, but do not use it on this host while the PM2
+instances are up.
+
 **Never run destructive tests against the live ports.** Verifying these paths
 means real downtime for three remote users. Announce it first, or exercise the
 failure on a scratch port.
