@@ -69,11 +69,26 @@ function getShellCommand(): { shell: string; args: string[] } {
 
 /**
  * Check if a path is within the allowed project directory
+ *
+ * A prefix test is not containment: `D:\repos\proj-secrets` "starts with"
+ * `D:\repos\proj`, so a cd into a sibling directory that merely shares a name
+ * prefix was treated as inside the project and the forced cd back never fired.
+ * Compare path segments the way routes/filesystem.ts isPathInside does.
  */
-function isPathWithinProject(targetPath: string, projectPath: string): boolean {
-  const normalizedTarget = path.resolve(targetPath).toLowerCase();
-  const normalizedProject = path.resolve(projectPath).toLowerCase();
-  return normalizedTarget.startsWith(normalizedProject);
+export function isPathWithinProject(targetPath: string, projectPath: string): boolean {
+  const normalize = (value: string): string => {
+    const resolved = path.resolve(value);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+
+  const rel = path.relative(normalize(projectPath), normalize(targetPath));
+
+  // '' is the project root itself, which counts as inside.
+  if (rel === '') {
+    return true;
+  }
+
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**

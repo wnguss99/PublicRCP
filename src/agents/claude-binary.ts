@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { ChildProcess } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import * as fs from 'fs';
 
 import { getLogger, Logger } from '../utils/logger';
@@ -541,21 +542,36 @@ export class ClaudeBinary implements Agent {
       hasStderr: !!stderr,
     });
 
+    // A pipe delivers whatever bytes happen to have arrived, so a multi-byte
+    // codepoint can straddle two chunks. `data.toString()` per chunk decoded each
+    // half separately and produced two U+FFFD replacement characters — verified:
+    // '지출' split after 4 bytes becomes '지���'. The corruption is silent
+    // (replacement chars are valid inside a JSON string, so the line still parses)
+    // and permanent, reaching both the browser and the stored conversation. A
+    // StringDecoder carries the partial sequence over to the next chunk.
+    //
+    // Kept as Buffer rather than setEncoding('utf8') so `bytes:` below stays a
+    // byte count instead of silently becoming a character count.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+
     if (stdout) {
       stdout.on('data', (data: Buffer) => {
+        const text = stdoutDecoder.write(data);
+
         this.logger.debug('STDOUT <<< Raw data', {
           direction: 'output',
           eventType: 'raw_data',
           bytes: data.length,
-          preview: data.toString(),
+          preview: text,
         });
-        this.processStreamData(data.toString());
+        this.processStreamData(text);
       });
     }
 
     if (stderr) {
       stderr.on('data', (data: Buffer) => {
-        const content = data.toString();
+        const content = stderrDecoder.write(data);
         this.logger.warn('STDERR <<< Error output', {
           direction: 'output',
           eventType: 'stderr',

@@ -1,9 +1,11 @@
 import { EventEmitter } from 'events';
+import path from 'path';
 import {
   DefaultShellService,
   createShellService,
   getShellService,
   getOrCreateShellService,
+  isPathWithinProject,
 } from '../../../src/services/shell-service';
 
 // Factory function to create fresh mock PTY processes
@@ -515,5 +517,45 @@ describe('Shell service singleton functions', () => {
     const service2 = getOrCreateShellService();
 
     expect(service1).toBe(service2);
+  });
+});
+
+/**
+ * This was `normalizedTarget.startsWith(normalizedProject)`, and a prefix test is
+ * not containment: a sibling directory whose name merely begins with the project's
+ * name passed the check, so the forced cd back into the project never fired.
+ */
+describe('isPathWithinProject', () => {
+  const project = path.join('D:', 'repos', 'proj');
+
+  it('accepts the project root itself', () => {
+    expect(isPathWithinProject(project, project)).toBe(true);
+  });
+
+  it('accepts a directory below the project', () => {
+    expect(isPathWithinProject(path.join(project, 'src', 'deep'), project)).toBe(true);
+  });
+
+  it('rejects a sibling that shares the project name as a prefix', () => {
+    expect(isPathWithinProject(path.join('D:', 'repos', 'proj-secrets'), project)).toBe(false);
+    expect(isPathWithinProject(path.join('D:', 'repos', 'proj2'), project)).toBe(false);
+  });
+
+  it('rejects the parent directory', () => {
+    expect(isPathWithinProject(path.join('D:', 'repos'), project)).toBe(false);
+  });
+
+  it('rejects an unrelated path', () => {
+    expect(isPathWithinProject(path.join('C:', 'Windows', 'System32'), project)).toBe(false);
+  });
+
+  it('rejects a traversal that climbs back out', () => {
+    expect(isPathWithinProject(path.join(project, '..', 'proj-secrets'), project)).toBe(false);
+  });
+
+  it('normalizes case on Windows', () => {
+    if (process.platform !== 'win32') return;
+
+    expect(isPathWithinProject(path.join('D:', 'REPOS', 'PROJ', 'src'), project)).toBe(true);
   });
 });

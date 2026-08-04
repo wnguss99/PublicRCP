@@ -978,6 +978,44 @@ describe('DefaultRalphLoopService - additional coverage', () => {
 
       expect(result).toBe(false);
     });
+
+    /**
+     * delete() used to call stop() unconditionally, and stop() always rewrites the
+     * record as `critical_failure / Loop stopped by user` and sets the *project's*
+     * status to 'stopped'. Deleting a finished loop from the history list therefore
+     * stamped a bogus failure on it and reported the project as stopped even when
+     * another loop or agent was still working.
+     */
+    it('should not stop the project when deleting a loop that is not active', async () => {
+      const service = createService();
+      mockRepository.delete.mockResolvedValue(true);
+
+      mockProjectRepository.updateStatus.mockClear();
+      mockRepository.update.mockClear();
+
+      const result = await service.delete('test-project', 'a-finished-task-id');
+
+      expect(result).toBe(true);
+      expect(mockRepository.delete).toHaveBeenCalledWith('test-project', 'a-finished-task-id');
+      // Neither the project status nor the record may be touched.
+      expect(mockProjectRepository.updateStatus).not.toHaveBeenCalled();
+      expect(mockRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('should still stop the loop when deleting the one that is running', async () => {
+      const service = createService();
+      mockRepository.delete.mockResolvedValue(true);
+
+      const config = createTestRalphLoopConfig();
+      const state = await service.start('test-project', config);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      mockProjectRepository.updateStatus.mockClear();
+
+      await service.delete('test-project', state.taskId);
+
+      expect(mockProjectRepository.updateStatus).toHaveBeenCalledWith('test-project', 'stopped');
+    });
   });
 
   describe('resume method', () => {

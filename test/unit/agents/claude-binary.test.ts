@@ -671,6 +671,61 @@ describe('ClaudeBinary', () => {
       agent.start('test');
     });
 
+    /**
+     * A pipe hands over whatever bytes have arrived, so a multi-byte codepoint can
+     * land half in one chunk and half in the next. Decoding each chunk on its own
+     * produced two U+FFFD replacement characters — '지출' became '지���'. The
+     * corruption is silent, because replacement characters are valid inside a JSON
+     * string so the line still parses, and it reaches both the browser and the
+     * stored conversation.
+     */
+    describe('multi-byte output split across chunks', () => {
+      it('should not corrupt Korean text broken mid-codepoint', () => {
+        const messageListener = jest.fn();
+        agent.on('message', messageListener);
+
+        const text = '지출 카테고리를 정리해줘';
+        const line = JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text }] },
+        }) + '\n';
+
+        const buf = Buffer.from(line, 'utf8');
+        // Cut inside the first Korean codepoint's 3 bytes.
+        const firstKoreanByte = buf.indexOf(Buffer.from('지', 'utf8'));
+        const cut = firstKoreanByte + 1;
+
+        mockProcess.stdout.emit('data', buf.subarray(0, cut));
+        mockProcess.stdout.emit('data', buf.subarray(cut));
+
+        expect(messageListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'stdout', content: text })
+        );
+      });
+
+      it('should not emit replacement characters for a split codepoint', () => {
+        const messageListener = jest.fn();
+        agent.on('message', messageListener);
+
+        const line = JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: '한글 테스트' }] },
+        }) + '\n';
+
+        const buf = Buffer.from(line, 'utf8');
+        const cut = buf.indexOf(Buffer.from('한', 'utf8')) + 2;
+
+        mockProcess.stdout.emit('data', buf.subarray(0, cut));
+        mockProcess.stdout.emit('data', buf.subarray(cut));
+
+        const contents = messageListener.mock.calls
+          .map((call) => (call[0] as { content?: string }).content || '')
+          .join('');
+
+        expect(contents).not.toContain('�');
+      });
+    });
+
     describe('handleStreamEvent', () => {
       it('should handle assistant event with text content', () => {
         const messageListener = jest.fn();

@@ -670,11 +670,24 @@ export class DefaultRalphLoopService implements RalphLoopService {
    */
   async delete(projectId: string, taskId: string): Promise<boolean> {
     try {
-      // 1. Stop the loop if it's currently running
-      await this.stop(projectId, taskId);
+      const taskKey = this.getLoopKey(projectId, taskId);
 
-      // 2. Remove from active loops map
-      const taskKey = `${projectId}-${taskId}`;
+      // 1. Stop the loop only if this loop is the one actually running.
+      //
+      // This used to call stop() unconditionally, and stop() always rewrites the
+      // record as `critical_failure / Loop stopped by user` *and* sets the whole
+      // project's status to 'stopped'. So deleting a finished loop from the
+      // history list stamped a bogus failure on it, and — if another loop or agent
+      // was running for that project — reported the project as stopped while it
+      // was still working.
+      if (this.activeLoops.has(taskKey)) {
+        await this.stop(projectId, taskId);
+      }
+
+      // 2. Remove from active loops map. The key was built as `${projectId}-...`
+      // here while every other site uses getLoopKey (`${projectId}:...`), so this
+      // delete never matched anything; it only appeared to work because stop()
+      // had already removed the correct key.
       this.activeLoops.delete(taskKey);
 
       // 3. Delete from repository (filesystem)

@@ -62,6 +62,17 @@ export class DefaultRunProcessManager
     // Stop existing process if running
     const existing = this.getProcess(projectId, configId);
 
+    // Cancel a pending auto-restart first, whatever the state.
+    //
+    // stop() was the only place that cleared restartTimer, and start() only calls
+    // stop() for a running/starting process. After a crash the entry sits in
+    // 'errored' with a timer armed, so starting it by hand inside the restart
+    // delay left that timer running: it fired, spawned a *second* pty and
+    // overwrote the map entry, and the process the user started became untracked —
+    // stop/stopAll/shutdown could no longer kill it, and it kept its port until
+    // the machine was rebooted.
+    this.cancelPendingRestart(existing);
+
     if (existing && (existing.state === 'running' || existing.state === 'starting')) {
       await this.stop(projectId, configId);
     }
@@ -254,10 +265,7 @@ export class DefaultRunProcessManager
     if (!proc) return Promise.resolve();
 
     // Cancel any pending restart
-    if (proc.restartTimer) {
-      clearTimeout(proc.restartTimer);
-      proc.restartTimer = null;
-    }
+    this.cancelPendingRestart(proc);
 
     if (proc.state !== 'running' && proc.state !== 'starting') {
       return Promise.resolve();
@@ -336,6 +344,14 @@ export class DefaultRunProcessManager
 
   private getProcess(projectId: string, configId: string): ManagedProcess | undefined {
     return this.processes.get(projectId)?.get(configId);
+  }
+
+  /** Disarm an auto-restart so it cannot spawn on top of a process started since. */
+  private cancelPendingRestart(proc: ManagedProcess | undefined): void {
+    if (!proc?.restartTimer) return;
+
+    clearTimeout(proc.restartTimer);
+    proc.restartTimer = null;
   }
 
   private setProcess(projectId: string, configId: string, proc: ManagedProcess): void {

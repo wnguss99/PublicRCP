@@ -19,12 +19,47 @@ describe('EscapeUtils', () => {
     });
 
     it('should escape " character', () => {
-      expect(EscapeUtils.escapeHtml('say "hello"')).toBe('say "hello"');
+      expect(EscapeUtils.escapeHtml('say "hello"')).toBe('say &quot;hello&quot;');
+    });
+
+    it('should escape \' character', () => {
+      expect(EscapeUtils.escapeHtml("it's")).toBe('it&#039;s');
     });
 
     it('should handle multiple special characters', () => {
       const result = EscapeUtils.escapeHtml('<div class="test">foo & bar</div>');
-      expect(result).toBe('&lt;div class="test"&gt;foo &amp; bar&lt;/div&gt;');
+      expect(result).toBe('&lt;div class=&quot;test&quot;&gt;foo &amp; bar&lt;/div&gt;');
+    });
+
+    /**
+     * Almost every caller interpolates into a double-quoted attribute. The old
+     * browser path (textContent -> innerHTML) left quotes alone, so a value like
+     * this closed data-path early and the rest became live markup.
+     */
+    it('should not allow breaking out of a double-quoted attribute', () => {
+      const hostile = 'x" onmouseover="alert(1)';
+      const attr = 'data-path="' + EscapeUtils.escapeHtml(hostile) + '"';
+
+      expect(attr).toBe('data-path="x&quot; onmouseover=&quot;alert(1)"');
+      expect(attr).not.toContain('onmouseover="alert');
+    });
+
+    it('should not allow breaking out of a single-quoted attribute', () => {
+      const hostile = "x' onmouseover='alert(1)";
+      const attr = "data-path='" + EscapeUtils.escapeHtml(hostile) + "'";
+
+      expect(attr).not.toContain("onmouseover='alert");
+    });
+
+    it('should behave the same with and without a DOM available', () => {
+      // The DOM shortcut and the string path used to disagree: only the Node
+      // fallback escaped quotes, so the browser was the unsafe one.
+      expect(EscapeUtils.escapeHtml('a"b\'c<d>e&f')).toBe('a&quot;b&#039;c&lt;d&gt;e&amp;f');
+    });
+
+    it('should return empty string for null and undefined', () => {
+      expect(EscapeUtils.escapeHtml(null)).toBe('');
+      expect(EscapeUtils.escapeHtml(undefined)).toBe('');
     });
 
     it('should return empty string for empty input', () => {

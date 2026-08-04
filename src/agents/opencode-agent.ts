@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { ChildProcess } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 
 import { getLogger, Logger } from '../utils/logger';
 import { ProcessManager, ProcessSpawner } from './process-manager';
@@ -217,9 +218,14 @@ export class OpencodeAgent implements Agent {
     const stdout = pm.getStdout();
     const stderr = pm.getStderr();
 
+    // Same chunk-boundary problem as ClaudeBinary: decoding each chunk on its own
+    // turns a codepoint split across two chunks into two replacement characters.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+
     if (stdout) {
       stdout.on('data', (data: Buffer) => {
-        const text = data.toString();
+        const text = stdoutDecoder.write(data);
         this.currentOutput += text;
         this._collectedOutput += text;
 
@@ -233,7 +239,7 @@ export class OpencodeAgent implements Agent {
 
     if (stderr) {
       stderr.on('data', (data: Buffer) => {
-        const text = data.toString();
+        const text = stderrDecoder.write(data);
         this.logger.warn('opencode stderr', { content: text });
 
         this.emitMessage({
