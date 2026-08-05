@@ -37,7 +37,13 @@ describe('conversation load failure', () => {
       const loadError = (state.conversationLoadErrors || {})[projectId];
 
       if (isLoading) {
-        conv.innerHTML = '<div class="loading">대화 이력을 불러오는 중</div>';
+        conv.innerHTML =
+          '<div class="flex py-6 pl-1" role="status" aria-label="대화 이력을 불러오는 중">' +
+          '<div class="ios-typing">' +
+          '<span class="ios-typing-dot"></span>' +
+          '<span class="ios-typing-dot"></span>' +
+          '<span class="ios-typing-dot"></span>' +
+          '</div></div>';
       } else if (loadError) {
         conv.innerHTML =
           '<div class="load-error">불러오지 못했습니다 (' +
@@ -158,7 +164,18 @@ describe('conversation load failure', () => {
       const html = document.getElementById('conversation').innerHTML;
 
       expect(html).not.toContain('No conversation yet');
-      expect(html).toContain('불러오는 중');
+      expect(document.querySelectorAll('.ios-typing-dot')).toHaveLength(3);
+    });
+
+    it('announces the wait to a screen reader, which cannot see the animation', () => {
+      state.conversations[PROJECT] = [];
+      state.conversationLoading[PROJECT] = true;
+
+      renderConversation(PROJECT);
+      const status = document.querySelector('[role="status"]');
+
+      expect(status).not.toBeNull();
+      expect(status.getAttribute('aria-label')).toContain('불러오는 중');
     });
 
     it('reports progress rather than the error a retry is retrying', () => {
@@ -169,7 +186,7 @@ describe('conversation load failure', () => {
       renderConversation(PROJECT);
       const html = document.getElementById('conversation').innerHTML;
 
-      expect(html).toContain('불러오는 중');
+      expect(document.querySelectorAll('.ios-typing-dot')).toHaveLength(3);
       expect(html).not.toContain('HTTP 502');
     });
 
@@ -272,6 +289,33 @@ describe('app.js keeps its anti-blanking guards', () => {
     // there blanks the chat just as effectively as a bad message does.
     const between = body.slice(emptied, appended);
     expect(between).toMatch(/try\s*\{[\s\S]*resetRenderingContext\(\)/);
+  });
+
+  it('paints an animated indicator, not a static line, while loading', () => {
+    const body = renderFn();
+    const branch = body.slice(body.indexOf('if (isLoading)'), body.indexOf('} else if (loadError)'));
+
+    expect(branch).toContain('ios-typing');
+    expect(branch.match(/ios-typing-dot/g) || []).toHaveLength(3);
+    // The animation carries the meaning visually; aria-label carries it for a
+    // screen reader, which gets nothing at all from moving dots.
+    expect(branch).toContain('role="status"');
+    expect(branch).toContain('aria-label="대화 이력을 불러오는 중"');
+  });
+
+  it('backs those classes with real CSS', () => {
+    const css = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'public', 'css', 'styles.css'),
+      'utf8'
+    );
+
+    // Not hypothetical: `loading-dots` was referenced in app.js with no rule
+    // anywhere in styles.css, so it rendered as plain motionless text. A class
+    // name that exists only in the markup is an animation that never runs.
+    expect(css).toMatch(/\.ios-typing\s*\{/);
+    expect(css).toMatch(/\.ios-typing-dot\s*\{/);
+    expect(css).toMatch(/@keyframes ios-typing-dot\s*\{/);
+    expect(css).toContain('prefers-reduced-motion');
   });
 
   it('reports a render failure to the backend, not only to the console', () => {

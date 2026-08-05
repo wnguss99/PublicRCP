@@ -1016,9 +1016,17 @@
       if (isLoading) {
         // In flight right now — say so. Checked ahead of loadError so a retry
         // reports progress instead of re-stating the failure it is retrying.
+        // An iMessage-style typing bubble rather than a line of text. The text
+        // it replaced was indistinguishable from a settled screen, which is the
+        // misreading this whole state exists to prevent. aria-label carries the
+        // wording so the meaning survives for a screen reader.
         $conv.html(
-          '<div class="text-center text-gray-500 py-6">' +
-          '<span class="loading-dots">대화 이력을 불러오는 중</span>' +
+          '<div class="flex py-6 pl-1" role="status" aria-label="대화 이력을 불러오는 중">' +
+          '<div class="ios-typing">' +
+          '<span class="ios-typing-dot"></span>' +
+          '<span class="ios-typing-dot"></span>' +
+          '<span class="ios-typing-dot"></span>' +
+          '</div>' +
           '</div>'
         );
       } else if (loadError) {
