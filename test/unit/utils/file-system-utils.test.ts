@@ -44,18 +44,70 @@ describe('file-system-utils', () => {
   });
 
   describe('atomicWriteFile', () => {
-    it('should write to temp file then rename', async () => {
+    /**
+     * The temp name carries pid + counter rather than a fixed `<file>.tmp`, so two
+     * overlapping writes to the same file cannot share one temp path and publish a
+     * mix of both. Assert the shape, not an exact string.
+     */
+    it('should write to a unique temp file then rename onto the target', async () => {
       mockFsPromises.writeFile.mockResolvedValue();
       mockFsPromises.rename.mockResolvedValue();
 
       await atomicWriteFile('/test/file.json', '{"data":true}');
 
-      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
-        '/test/file.json.tmp', '{"data":true}', 'utf-8'
-      );
-      expect(mockFsPromises.rename).toHaveBeenCalledWith(
-        '/test/file.json.tmp', '/test/file.json'
-      );
+      const [tempPath, contents, encoding] = mockFsPromises.writeFile.mock.calls[0]!;
+      expect(String(tempPath)).toMatch(/^\/test\/file\.json\.\d+\.\d+\.tmp$/);
+      expect(contents).toBe('{"data":true}');
+      expect(encoding).toBe('utf-8');
+
+      expect(mockFsPromises.rename).toHaveBeenCalledWith(tempPath, '/test/file.json');
+    });
+
+    /**
+     * 176 conversation saves were lost to `EPERM ... rename '<file>.json.tmp' ->
+     * '<file>.json'` on these instances. Windows blocks the swap while any process
+     * holds the destination open (Defender, the indexer), the callers only log the
+     * failure, and the message never reached disk — it simply disappeared on the
+     * next reload. The write had already succeeded; only the swap was blocked, for
+     * an instant.
+     */
+    it('retries a rename blocked by a transient Windows lock', async () => {
+      mockFsPromises.writeFile.mockResolvedValue();
+      const eperm = Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      mockFsPromises.rename
+        .mockRejectedValueOnce(eperm)
+        .mockRejectedValueOnce(eperm)
+        .mockResolvedValue(undefined);
+
+      await expect(atomicWriteFile('/test/file.json', 'x')).resolves.toBeUndefined();
+
+      expect(mockFsPromises.rename).toHaveBeenCalledTimes(3);
+      // The data must not be deleted while retries are still possible.
+      expect(mockFsPromises.unlink).not.toHaveBeenCalled();
+    });
+
+    it('gives up and cleans the temp file if the lock never clears', async () => {
+      mockFsPromises.writeFile.mockResolvedValue();
+      const eperm = Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      mockFsPromises.rename.mockRejectedValue(eperm);
+      mockFsPromises.unlink.mockResolvedValue();
+
+      await expect(atomicWriteFile('/test/file.json', 'x')).rejects.toThrow('EPERM');
+
+      expect(mockFsPromises.rename).toHaveBeenCalledTimes(5);
+      expect(mockFsPromises.unlink).toHaveBeenCalled();
+    });
+
+    it('does not retry an error that will never clear', async () => {
+      mockFsPromises.writeFile.mockResolvedValue();
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockFsPromises.rename.mockRejectedValue(enoent);
+      mockFsPromises.unlink.mockResolvedValue();
+
+      await expect(atomicWriteFile('/test/file.json', 'x')).rejects.toThrow('ENOENT');
+
+      // Retrying a permanent failure only delays reporting it.
+      expect(mockFsPromises.rename).toHaveBeenCalledTimes(1);
     });
 
     it('should use custom encoding', async () => {
@@ -64,9 +116,9 @@ describe('file-system-utils', () => {
 
       await atomicWriteFile('/test/file.bin', 'data', 'ascii');
 
-      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
-        '/test/file.bin.tmp', 'data', 'ascii'
-      );
+      const [tempPath, , encoding] = mockFsPromises.writeFile.mock.calls[0]!;
+      expect(String(tempPath)).toMatch(/^\/test\/file\.bin\.\d+\.\d+\.tmp$/);
+      expect(encoding).toBe('ascii');
     });
   });
 

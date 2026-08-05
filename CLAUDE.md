@@ -107,6 +107,20 @@ Violating any of these has already broken production once, so the gate fails har
 - **Docker containers are matched by the `claudito-project` label.** Matching by
   "first container returned by `docker ps`" attached agents to other projects' —
   and other users' — containers.
+- **`atomicWriteFile` retries the rename and uses a unique temp name.** Windows
+  refuses a rename over a file any process still holds open — Defender and the search
+  indexer both do, for milliseconds — and 176 conversation saves were lost to
+  `EPERM ... rename '<file>.json.tmp' -> '<file>.json'` because the callers only log
+  the failure. The write had already succeeded; only the swap was blocked. Transient
+  codes (EPERM/EACCES/EBUSY) are retried with backoff, anything else fails straight
+  away, and the temp path carries pid + counter so two overlapping writes to one file
+  cannot share a temp file and publish a mix of both.
+- **A refusal the user caused must be an `AppError`.** `formatErrorResponse()` keeps
+  the message only for `AppError` and replaces everything else with "An unexpected
+  error occurred" — right for a crash, wrong for an expected refusal. A bare
+  `throw new Error('Project with this path already exists')` is why "Add Project"
+  looked like it crashed and was retried eleven times. Throw `ConflictError` /
+  `ValidationError`, and name the thing the user has to change.
 - **Tests must never write to the real data dir.** `test/env-setup.ts` redirects
   `CLAUDITO_HOME` per Jest worker; a test run was caught overwriting a live
   instance's `sessions.json`.

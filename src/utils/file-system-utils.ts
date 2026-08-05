@@ -5,17 +5,79 @@ import { getLogger } from './logger';
 const logger = getLogger('file-system-utils');
 
 /**
- * Atomic file write operation - writes to temp file then renames
+ * Windows fails a rename over an existing file while any process still holds a
+ * handle to it — Defender, the search indexer and backup agents all open a file
+ * moments after it is written. The error is transient and clears in milliseconds.
  */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_ATTEMPTS = 5;
+const RENAME_BACKOFF_MS = 20;
+
+function isTransientRenameError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Atomic file write operation - writes to temp file then renames.
+ *
+ * Retries the rename, because without it this silently lost user data: 176 saves
+ * failed with `EPERM ... rename '<conversation>.json.tmp' -> '<conversation>.json'`
+ * across these instances, and the callers only log the failure — so those messages
+ * never reached disk and vanished on the next reload. The write itself had already
+ * succeeded; only the swap was blocked, and only for an instant.
+ *
+ * The temp file also carries the pid and a counter. It used to be a fixed
+ * `<file>.tmp`, so two overlapping writes to the same file shared one temp path and
+ * could publish a half-written mix of both.
+ */
+let tempCounter = 0;
+
 export async function atomicWriteFile(
   filePath: string,
   data: string,
   encoding: BufferEncoding = 'utf-8'
 ): Promise<void> {
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${++tempCounter}.tmp`;
+
   await fs.promises.writeFile(tempPath, data, encoding);
-  await fs.promises.rename(tempPath, filePath);
-  logger.debug('Atomic file write completed', { filePath });
+
+  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
+    try {
+      await fs.promises.rename(tempPath, filePath);
+      logger.debug('Atomic file write completed', { filePath, attempt });
+      return;
+    } catch (err) {
+      const lastAttempt = attempt === RENAME_ATTEMPTS;
+
+      if (!isTransientRenameError(err) || lastAttempt) {
+        // Do not leave the temp file behind for pruneAbandonedTempFiles to find.
+        await fs.promises.unlink(tempPath).catch(() => undefined);
+
+        if (lastAttempt && isTransientRenameError(err)) {
+          logger.error('Atomic write gave up after repeated transient failures', {
+            filePath,
+            attempts: RENAME_ATTEMPTS,
+            code: (err as NodeJS.ErrnoException).code,
+          });
+        }
+
+        throw err;
+      }
+
+      logger.warn('Atomic write rename blocked, retrying', {
+        filePath,
+        attempt,
+        code: (err as NodeJS.ErrnoException).code,
+      });
+
+      await delay(RENAME_BACKOFF_MS * attempt);
+    }
+  }
 }
 
 /**
