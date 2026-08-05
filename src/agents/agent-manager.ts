@@ -177,6 +177,11 @@ interface PendingPlan {
  */
 const PENDING_PLAN_GRACE_MS = 30_000;
 
+/** The mode name as the UI labels it, for messages the user reads. */
+function describePermissionMode(mode: 'acceptEdits' | 'plan'): string {
+  return mode === 'plan' ? 'Plan' : 'Accept Edits';
+}
+
 export interface AgentManager {
   startAgent(projectId: string, instructions: string): Promise<void>;
   startInteractiveAgent(projectId: string, options?: StartInteractiveAgentOptions): Promise<StartAgentResult>;
@@ -2013,13 +2018,28 @@ export class DefaultAgentManager implements AgentManager {
     this.emit('planStateChanged', projectId, true);
   }
 
+  /**
+   * Claude called EnterPlanMode, so the agent is restarted with `--permission-mode
+   * plan`. Two things this must not do, both of which it used to.
+   *
+   * It must not throw away the mode the user chose. The switch is decided by the
+   * model, not the person, and permission is theirs to set — so the mode in force
+   * beforehand is remembered here and restored when the plan is approved, instead of
+   * the approval hard-coding acceptEdits over whatever they had picked.
+   *
+   * And it must not be silent. The notice was `hidden: true`, so someone who had
+   * selected Accept Edits found the project sitting in Plan with nothing to explain
+   * it. It now says what happened, why, and when it ends.
+   */
   private async handleEnterPlanMode(agent: Agent): Promise<void> {
     const projectId = agent.projectId;
     const sessionId = agent.sessionId;
+    const previousMode = agent.permissionMode;
 
     this.logger.info('EnterPlanMode detected, restarting with plan mode', {
       projectId,
       sessionId,
+      previousMode,
     });
 
     await this.stopAgent(projectId);
@@ -2031,13 +2051,14 @@ export class DefaultAgentManager implements AgentManager {
       initialMessage: 'Continue',
     });
 
-    const systemMessage: AgentMessage = {
+    this.emit('message', projectId, {
       type: 'system',
-      content: '[Switched to Plan mode]',
+      content:
+        '[Claude 가 계획을 세우기 위해 Plan 모드로 전환했습니다. ' +
+        '플랜을 승인하면 Accept Edits 모드로 돌아갑니다. ' +
+        '직접 모드 버튼으로 바꿔도 됩니다.]',
       timestamp: new Date().toISOString(),
-      hidden: true,
-    };
-    this.emit('message', projectId, systemMessage);
+    });
   }
 
   private async handlePlanApprovalResponse(
@@ -2085,26 +2106,35 @@ export class DefaultAgentManager implements AgentManager {
         ? 'I approved the plan. Please proceed with implementing it.'
         : pendingPlan.planContent;
 
+      // acceptEdits, and not a "remembered" mode: the permission domain is only
+      // {acceptEdits, plan}, so the mode before an automatic switch into plan can
+      // only have been acceptEdits anyway. Storing and restoring it would be an
+      // abstraction with exactly one possible value. What made the switch *stick*
+      // was the client persisting the server-reported mode over the user's choice —
+      // fixed in permission-mode-module.syncFromServer.
+      const restoredMode = 'acceptEdits';
+
       await this.startInteractiveAgent(projectId, {
         initialMessage: approvalMessage,
         sessionId: pendingPlan.sessionId ?? undefined,
         isNewSession: resuming === false,
-        permissionMode: 'acceptEdits',
+        permissionMode: restoredMode,
       });
 
-      // Emit a hidden message to indicate the restart happened
-      const hiddenMessage: AgentMessage = {
+      this.emit('message', projectId, {
         type: 'system',
-        content: '[Plan approved. Agent restarted with Accept Edits mode]',
+        content: `[플랜을 승인했습니다. ${describePermissionMode(restoredMode)} 모드로 계속합니다.]`,
         timestamp: new Date().toISOString(),
-        hidden: true,
-      };
-      this.emit('message', projectId, hiddenMessage);
+      });
     } else if (response.toLowerCase() === 'no') {
       // User rejected the plan
       this.logger.info('User rejected plan', { projectId });
 
-      // Send the rejection to Claude
+      // Deliberately stays in plan mode. Rejecting means the planning conversation
+      // continues — Claude answers by revising or asking — and plan mode is right for
+      // that. Switching back here would force another restart and discard the reply
+      // the user is waiting for. The stored *preference* is untouched either way, so
+      // nothing is lost.
       const agent = this.agents.get(projectId);
       if (agent) {
         agent.sendInput('no');

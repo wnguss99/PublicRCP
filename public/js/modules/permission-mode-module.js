@@ -258,19 +258,23 @@
   }
 
   /**
-   * Sync mode from server (e.g. from agent status response).
-   * Also saves it per-project.
+   * Sync the *displayed* mode from the server, without overwriting the user's choice.
+   *
+   * This used to call setModeForProject(), which is what made an automatic switch
+   * permanent: Claude calling EnterPlanMode restarts the agent in plan mode, the
+   * server reports plan, and this wrote plan over the stored preference — so the
+   * Accept Edits the user had picked was gone, with nothing left to restore it from.
+   * Switching project and back then "restored" plan, because that is what was saved.
+   *
+   * The distinction that fixes it: a change the *user* made is a preference and is
+   * stored (applyModeChange); a mode the *server* reports is the current effective
+   * state and is display-only. The display still follows the server, so the UI never
+   * claims a mode the agent is not actually running.
    */
   function syncFromServer(mode, projectId) {
     if (!mode) return;
 
     state.permissionMode = mode;
-
-    var pid = projectId || state.selectedProjectId;
-
-    if (pid) {
-      setModeForProject(pid, mode);
-    }
 
     updateButtons();
   }

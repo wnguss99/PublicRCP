@@ -462,6 +462,29 @@ set in `ecosystem.config.js`), so three users on three ports never queue each ot
 the single Claude subscription and `~/.claude*`, which is why rate limits are the
 real contention point.
 
+### The permission mode the user picked is theirs (2026-08-05)
+
+A project set to Accept Edits kept turning up in Plan. Not a bug — `handleEnterPlanMode`
+restarts the agent with `--permission-mode plan` whenever Claude calls the
+`EnterPlanMode` tool — but the surrounding behaviour was indefensible in two ways.
+
+- **The switch must be visible.** The notice was `hidden: true`, so the mode changed
+  under the user with nothing to explain it. It now says what happened, why, and that
+  approving the plan returns to Accept Edits.
+- **A mode the server reports is display state; a mode the user picked is a
+  preference.** `syncFromServer()` called `setModeForProject()`, so the automatic plan
+  switch was written over the stored choice — the Accept Edits selection was gone, and
+  switching project and back "restored" plan because plan was what had been saved.
+  Only `applyModeChange()` (a user action) may write the preference. The display still
+  follows the server, so the UI never claims a mode the agent is not running.
+- **Rejecting a plan deliberately stays in plan mode.** The planning conversation
+  continues, so plan is the right mode, and switching back would force another restart
+  that discards the reply the user is waiting for.
+- There is no "remember and restore the previous mode" machinery, and adding it would
+  be dead weight: the domain is only `{acceptEdits, plan}`, so the mode before an
+  automatic switch into plan can only have been `acceptEdits` — already the value used
+  on approval. (The UI's Auto/Ask buttons are `approvalMode`, a different setting.)
+
 ### A project's status has exactly one owner (2026-08-03, G1)
 
 G1 showed "Claude agent exited with code 1" and an Error badge, kept working

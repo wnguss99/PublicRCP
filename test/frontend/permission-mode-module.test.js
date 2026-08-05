@@ -303,6 +303,44 @@ describe('PermissionModeModule', () => {
 
       expect(mockState.permissionMode).toBe('acceptEdits');
     });
+
+    /**
+     * This is what made an automatic switch permanent. Claude calling EnterPlanMode
+     * restarts the agent in plan mode; the server then reports plan, and syncFromServer
+     * used to write that over the stored per-project preference. The Accept Edits the
+     * user had chosen was gone, with nothing left to restore it from — and switching
+     * project and back "restored" plan, because plan was what had been saved.
+     *
+     * A mode the server reports is the current effective state (display only). A mode
+     * the user picked is a preference (stored). Only the second may be written.
+     */
+    it('does not overwrite the stored user choice with a server-reported mode', () => {
+      // The user picks Accept Edits for this project, through the public path.
+      mockState.selectedProjectId = 'proj-1';
+      mockState.permissionMode = 'plan';
+      PermissionModeModule.setMode('acceptEdits');
+
+      // Claude switches the agent into plan mode and the server reports it.
+      PermissionModeModule.syncFromServer('plan', 'proj-1');
+
+      // Displayed mode follows the server, so the UI never claims a mode the agent
+      // is not running...
+      expect(mockState.permissionMode).toBe('plan');
+      // ...but the preference the user set is still theirs.
+      expect(PermissionModeModule.getModeForProject('proj-1')).toBe('acceptEdits');
+    });
+
+    it('restores the stored user choice when returning to the project', () => {
+      mockState.selectedProjectId = 'proj-1';
+      mockState.permissionMode = 'plan';
+      PermissionModeModule.setMode('acceptEdits');
+      PermissionModeModule.syncFromServer('plan', 'proj-1');
+
+      PermissionModeModule.onProjectChanged('proj-1');
+
+      // Previously this came back as plan, because plan had been persisted.
+      expect(mockState.permissionMode).toBe('acceptEdits');
+    });
   });
 
   describe('applyPendingIfNeeded', () => {

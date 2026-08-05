@@ -140,8 +140,12 @@ describe('DefaultAgentManager - methods coverage', () => {
       await agentManager.approvePlan('test-project', 'yes');
 
       expect(agentManager.hasPendingPlan('test-project')).toBe(false);
-      const hiddenMsg = messages.find(m => m.hidden && m.content.includes('Plan approved'));
-      expect(hiddenMsg).toBeDefined();
+      // Visible, not hidden: the mode changes on approval, so the user is told which
+      // mode they are now in rather than discovering it later.
+      const notice = messages.find(m => m.content.includes('승인'));
+      expect(notice).toBeDefined();
+      expect(notice!.hidden).toBeUndefined();
+      expect(notice!.content).toContain('Accept Edits');
     });
 
     it('should handle "no" response by sending rejection', async () => {

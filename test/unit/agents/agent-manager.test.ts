@@ -2686,16 +2686,21 @@ describe('DefaultAgentManager', () => {
       // Wait for async handling (includes 500ms delay)
       await new Promise(resolve => setTimeout(resolve, 700));
 
-      // Should emit a hidden system message about plan mode switch
+      // The notice must be VISIBLE. It was hidden: true, so a user who had selected
+      // Accept Edits found the project sitting in Plan with nothing to explain it —
+      // the whole reason this switch felt like a fault.
       const systemMessages = messageHandler.mock.calls.filter(
         (call: unknown[]) => (call[1] as { type: string })?.type === 'system'
       );
       expect(systemMessages.length).toBeGreaterThan(0);
-      expect(systemMessages[0][1]).toMatchObject({
-        type: 'system',
-        content: '[Switched to Plan mode]',
-        hidden: true,
-      });
+
+      const notice = systemMessages[0][1] as { type: string; content: string; hidden?: boolean };
+      expect(notice.type).toBe('system');
+      expect(notice.hidden).toBeUndefined();
+      expect(notice.content).toContain('Plan');
+      // Says why, and how it ends.
+      expect(notice.content).toContain('계획');
+      expect(notice.content).toContain('Accept Edits');
     });
   });
 
