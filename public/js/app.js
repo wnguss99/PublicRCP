@@ -972,7 +972,25 @@
     });
 
     if (filteredMessages.length === 0) {
-      $conv.html('<div class="text-gray-500 text-center">No conversation yet</div>');
+      // "No conversation yet" is a claim about the data. Only make it when the
+      // load actually succeeded — otherwise say we could not load it and offer a
+      // retry, so a failed request can never be read as deleted history.
+      // Defensive read: a throw inside renderConversation is itself the blanking
+      // failure mode this whole change exists to remove, so never risk one here.
+      var loadError = (state.conversationLoadErrors || {})[projectId];
+
+      if (loadError) {
+        $conv.html(
+          '<div class="text-center text-gray-400 py-6">' +
+          '<div class="mb-2">대화 이력을 불러오지 못했습니다 (' + escapeHtml(loadError) + ')</div>' +
+          '<div class="text-xs text-gray-500 mb-3">기록은 서버에 그대로 있습니다.</div>' +
+          '<button id="btn-retry-conversation" class="px-3 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-white">다시 시도</button>' +
+          '</div>'
+        );
+      } else {
+        $conv.html('<div class="text-gray-500 text-center">No conversation yet</div>');
+      }
+
       return;
     }
 
@@ -1154,6 +1172,16 @@
     container.scrollTo({ top: $target[0].offsetTop - container.offsetTop - 8, behavior: 'smooth' });
     $target.addClass('msg-highlight');
     setTimeout(function() { $target.removeClass('msg-highlight'); }, 1800);
+  });
+
+  // Retry a history load that failed. Delegated, because the button only exists
+  // inside the error state renderConversation() paints.
+  $(document).on('click', '#btn-retry-conversation', function() {
+    var projectId = state.selectedProjectId;
+    if (!projectId) return;
+
+    $(this).prop('disabled', true).text('불러오는 중...');
+    loadConversationHistory(projectId);
   });
 
   function scrollConversationToBottom() {
@@ -4363,9 +4391,16 @@
     // Save selected project to localStorage
     saveToLocalStorage(LOCAL_STORAGE_KEYS.SELECTED_PROJECT, projectId);
 
-    // Clear stale conversation state so renderConversation shows placeholder
-    // instead of old messages while the AJAX history load is in flight.
-    state.conversations[projectId] = [];
+    // Do NOT clear this project's cached messages here.
+    //
+    // The cache is keyed by projectId, so it can never show another project's
+    // history — the stale-data worry this used to guard against does not apply.
+    // What it did instead was destroy the last known good view *before* knowing
+    // the reload would arrive, so a failed load left the chat permanently empty
+    // and the history looked deleted. Render what we have, then refresh it.
+    if (!state.conversations[projectId]) {
+      state.conversations[projectId] = [];
+    }
 
     subscribeToProject(projectId);
     loadConversationHistory(projectId);
@@ -4867,10 +4902,28 @@
     });
   }
 
+  /**
+   * Load a project's conversation from the server.
+   *
+   * This used to have only a `.done()` handler. A conversation here reaches several
+   * megabytes (measured: 1862 messages, 4.9 MB), and the UI is driven from a phone
+   * over Tailscale, so that single request does fail. When it did, nothing ran:
+   * selectProject had already emptied the cache, so the chat rendered
+   * "No conversation yet" and the user saw their entire history as deleted — with
+   * no error, no retry, and the data sitting intact on disk the whole time.
+   *
+   * Two rules now: a failure never masquerades as an empty conversation, and a
+   * failure never destroys what we already had.
+   */
   function loadConversationHistory(projectId) {
+    if (!state.conversationLoadErrors) {
+      state.conversationLoadErrors = {};
+    }
+
     return $.get('/api/projects/' + projectId + '/conversation')
       .done(function(data) {
         state.conversations[projectId] = data.messages || [];
+        state.conversationLoadErrors[projectId] = null;
         state.currentConversationStats = data.stats || null;
         state.currentConversationMetadata = data.metadata || null;
         state.currentConversationLabel = data.label || null;
@@ -4878,6 +4931,17 @@
         if (state.selectedProjectId === projectId) {
           renderConversation(projectId);
           ConversationHistoryModule.updateStats();
+        }
+      })
+      .fail(function(xhr) {
+        // Keep whatever is cached for THIS project — it is that project's own
+        // history, and showing it is strictly better than showing nothing.
+        state.conversationLoadErrors[projectId] =
+          (xhr && xhr.status ? 'HTTP ' + xhr.status : 'network error');
+
+        if (state.selectedProjectId === projectId) {
+          renderConversation(projectId);
+          showErrorToast(xhr, 'Failed to load conversation history');
         }
       });
   }

@@ -32,6 +32,11 @@
 
       // Conversations
       conversations: {},
+      // projectId -> error text when the last history load failed, else null.
+      // Without this an empty `conversations[projectId]` is ambiguous: it means
+      // both "this project has no messages" and "we never managed to load them",
+      // and the UI showed the reassuring version of that for both.
+      conversationLoadErrors: {},
       currentConversationId: null,
       currentConversationStats: null,
       currentConversationMetadata: null,

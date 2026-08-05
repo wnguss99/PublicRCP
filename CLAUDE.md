@@ -303,6 +303,37 @@ All project routes prefixed with `/api/projects/:id`. Standard REST verbs (GET/P
 
 **Run Configurations**: `run_config_output` (configId, data), `run_config_status` (configId, status)
 
+### An empty conversation must be a fact, never a failed request (2026-08-05)
+
+Refreshing looked like it deleted the whole history. It never did — the messages
+were intact on disk every time (measured on the real file: 1862 messages,
+4.9 MB, and `GET /conversation` returned all of them). Two things presented that
+as deletion:
+
+- `selectProject()` set `state.conversations[projectId] = []` **before** the
+  reload, throwing away the last known good view. The cache is keyed by
+  projectId, so the stale-data worry it was guarding against could not happen
+  anyway; all it achieved was destroying the fallback.
+- `loadConversationHistory()` had only a `.done()` handler. One request carries
+  the entire conversation — several megabytes — and the UI is driven from a phone
+  over Tailscale, so it does fail. When it did, nothing ran at all: the emptied
+  cache rendered the reassuring `No conversation yet`, with no error, no retry,
+  and no way to tell that from real data loss.
+
+- **`No conversation yet` is a claim about the data and may only be shown when
+  the load succeeded.** `state.conversationLoadErrors[projectId]` distinguishes
+  "loaded, genuinely empty" from "never loaded", and the failure state says so
+  and offers a retry. Read it defensively (`(state.conversationLoadErrors || {})`)
+  — a throw inside `renderConversation()` is itself the blanking bug, because
+  `$conv.empty()` runs first.
+- **A failed load must not destroy what is on screen.** Keep the project's own
+  cached messages and re-render them; showing slightly stale history beats
+  showing none.
+- **Every render of ~1800 messages costs ~1000 nodes / ~20k DOM elements /
+  1.8 MB of HTML** (measured). The payload size is the real aggravator here and
+  is still unpaged — if this returns, page the history rather than making the
+  single request bigger.
+
 ### A message must never be silently lost or refused (2026-08-03 audit)
 
 Every "the chat doesn't work" report so far has been one of three shapes: the
