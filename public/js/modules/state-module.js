@@ -37,6 +37,11 @@
       // both "this project has no messages" and "we never managed to load them",
       // and the UI showed the reassuring version of that for both.
       conversationLoadErrors: {},
+      // projectId -> true while a history load is in flight. Without this the
+      // empty cache of a first render is indistinguishable from "no messages",
+      // so every refresh showed "No conversation yet" for the whole duration of
+      // a multi-megabyte fetch — the same false claim of deletion, just earlier.
+      conversationLoading: {},
       currentConversationId: null,
       currentConversationStats: null,
       currentConversationMetadata: null,

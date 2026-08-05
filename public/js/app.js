@@ -944,6 +944,39 @@
     updateInputArea();
   }
 
+  /** Short, always-safe text for an exception. */
+  function describeError(err) {
+    if (!err) return 'unknown error';
+    if (err.message) return String(err.message);
+
+    try {
+      return String(err);
+    } catch (e) {
+      return 'unknown error';
+    }
+  }
+
+  /**
+   * Report a failure that happened while painting the conversation.
+   *
+   * Routed to the backend log, not just the console: Claudito is driven from a
+   * phone over Tailscale, so a console-only error is a bug nobody can ever see.
+   */
+  function logRenderFailure(stage, err) {
+    if (window.console && console.error) {
+      console.error('renderConversation/' + stage + ' failed', err);
+    }
+
+    try {
+      logFrontendError(
+        'renderConversation/' + stage + ': ' + describeError(err),
+        'app.js', 0, 0, err, 'render'
+      );
+    } catch (e) {
+      // Reporting a failure must never become a second failure.
+    }
+  }
+
   // Conversation rendering
   function renderConversation(projectId) {
     var $conv = $('#conversation');
@@ -977,9 +1010,18 @@
       // retry, so a failed request can never be read as deleted history.
       // Defensive read: a throw inside renderConversation is itself the blanking
       // failure mode this whole change exists to remove, so never risk one here.
+      var isLoading = (state.conversationLoading || {})[projectId];
       var loadError = (state.conversationLoadErrors || {})[projectId];
 
-      if (loadError) {
+      if (isLoading) {
+        // In flight right now — say so. Checked ahead of loadError so a retry
+        // reports progress instead of re-stating the failure it is retrying.
+        $conv.html(
+          '<div class="text-center text-gray-500 py-6">' +
+          '<span class="loading-dots">대화 이력을 불러오는 중</span>' +
+          '</div>'
+        );
+      } else if (loadError) {
         $conv.html(
           '<div class="text-center text-gray-400 py-6">' +
           '<div class="mb-2">대화 이력을 불러오지 못했습니다 (' + escapeHtml(loadError) + ')</div>' +
@@ -994,28 +1036,53 @@
       return;
     }
 
-    // Reset timestamp context for time differences
-    MessageRenderer.resetRenderingContext();
+    // Everything below runs after $conv.empty(), so an exception here is the
+    // blank screen — the messages are gone from the DOM and the replacement was
+    // never appended. One unrenderable message must therefore cost that one
+    // message, never the conversation.
+    try {
+      // Reset timestamp context for time differences
+      MessageRenderer.resetRenderingContext();
+    } catch (err) {
+      logRenderFailure('resetRenderingContext', err);
+    }
 
     var emailEnabled = state.settings && state.settings.email && state.settings.email.enabled === true;
     filteredMessages.forEach(function(msg) {
-      var $msg = $(MessageRenderer.renderMessage(msg));
-      var $emailBtn = $msg.find('.msg-email-btn');
-      $emailBtn.css('display', emailEnabled ? 'flex' : 'none');
-      if (msg.timestamp) {
-        var sentKey = 'email-sent:' + (state.selectedProjectId || '') + ':' + msg.timestamp;
-        try { if (localStorage.getItem(sentKey)) $emailBtn.addClass('sent'); } catch(e) {}
+      try {
+        var $msg = $(MessageRenderer.renderMessage(msg));
+        var $emailBtn = $msg.find('.msg-email-btn');
+        $emailBtn.css('display', emailEnabled ? 'flex' : 'none');
+        if (msg.timestamp) {
+          var sentKey = 'email-sent:' + (state.selectedProjectId || '') + ':' + msg.timestamp;
+          try { if (localStorage.getItem(sentKey)) $emailBtn.addClass('sent'); } catch(e) {}
+        }
+        $conv.append($msg);
+      } catch (err) {
+        // A visible placeholder, not a silent skip: a message that vanished
+        // without a trace is the same report we are here to eliminate.
+        logRenderFailure('renderMessage', err);
+        $conv.append(
+          $('<div class="text-xs text-yellow-500 py-1"></div>')
+            .text('[이 메시지를 표시할 수 없습니다 — ' + describeError(err) + ']')
+        );
       }
-      $conv.append($msg);
     });
 
-    // Inject mermaid toolbars after rendering all messages
-    if (MessageRenderer.injectMermaidToolbars) {
-      MessageRenderer.injectMermaidToolbars();
-    }
+    // Past this point the messages are already on screen, so a throw cannot
+    // blank the view — but it would still propagate into the ajax callback that
+    // called us and abort whatever ran next.
+    try {
+      // Inject mermaid toolbars after rendering all messages
+      if (MessageRenderer.injectMermaidToolbars) {
+        MessageRenderer.injectMermaidToolbars();
+      }
 
-    restorePromptState(messages);
-    updateLastRequestBar();
+      restorePromptState(messages);
+      updateLastRequestBar();
+    } catch (err) {
+      logRenderFailure('post-render', err);
+    }
 
     // Force scroll to bottom on full render, ignoring scroll lock.
     // Scroll lock is for live sessions only (user scrolled up to read history);
@@ -4920,8 +4987,19 @@
       state.conversationLoadErrors = {};
     }
 
+    if (!state.conversationLoading) {
+      state.conversationLoading = {};
+    }
+
+    // Marked before the request goes out, because selectProject() renders
+    // synchronously on the next line. Until this existed that render had an
+    // empty cache and no error, so it painted "No conversation yet" for the
+    // entire fetch — indistinguishable from the deletion we are ruling out.
+    state.conversationLoading[projectId] = true;
+
     return $.get('/api/projects/' + projectId + '/conversation')
       .done(function(data) {
+        state.conversationLoading[projectId] = false;
         state.conversations[projectId] = data.messages || [];
         state.conversationLoadErrors[projectId] = null;
         state.currentConversationStats = data.stats || null;
@@ -4936,6 +5014,7 @@
       .fail(function(xhr) {
         // Keep whatever is cached for THIS project — it is that project's own
         // history, and showing it is strictly better than showing nothing.
+        state.conversationLoading[projectId] = false;
         state.conversationLoadErrors[projectId] =
           (xhr && xhr.status ? 'HTTP ' + xhr.status : 'network error');
 
