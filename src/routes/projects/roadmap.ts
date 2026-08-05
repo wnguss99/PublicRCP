@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { asyncHandler, NotFoundError, ValidationError } from '../../utils';
+import { asyncHandler, AppError, NotFoundError, ValidationError } from '../../utils';
 import {
   ProjectRouterDependencies,
   RoadmapPromptBody,
@@ -75,7 +75,12 @@ export function createRoadmapRouter(deps: ProjectRouterDependencies): Router {
     });
 
     if (!result.success) {
-      throw new Error(result.error || 'Failed to generate roadmap');
+      // AppError, not a bare Error: formatErrorResponse() discards the message of
+      // anything that is not an AppError, so result.error — the only explanation of
+      // what went wrong — was replaced by "An unexpected error occurred" on its way
+      // to the browser. Kept at 500 because the failure is usually the generator's,
+      // not the request's; the point is that the reason survives.
+      throw new AppError(result.error || 'Failed to generate roadmap', 500, 'ROADMAP_GENERATION_FAILED');
     }
 
     res.json({ success: true });
@@ -100,7 +105,7 @@ export function createRoadmapRouter(deps: ProjectRouterDependencies): Router {
     });
 
     if (!result.success) {
-      throw new Error(result.error || 'Failed to modify roadmap');
+      throw new AppError(result.error || 'Failed to modify roadmap', 500, 'ROADMAP_GENERATION_FAILED');
     }
 
     // Read and return the updated roadmap from where the generator saved it

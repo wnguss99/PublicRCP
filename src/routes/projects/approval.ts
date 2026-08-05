@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { NotFoundError } from '../../utils';
 import { ProjectRouterDependencies } from './types';
 import {
   ApprovalDecision,
@@ -149,7 +150,9 @@ async function persistProjectAllowRule(
 ): Promise<void> {
   const project = await deps.projectRepository.findById(projectId);
   if (!project) {
-    throw new Error('Project not found');
+    // NotFoundError so the client gets 404 + this message; a bare Error became a
+    // 500 "An unexpected error occurred".
+    throw new NotFoundError('Project not found');
   }
 
   const existing = project.permissionOverrides ?? null;
