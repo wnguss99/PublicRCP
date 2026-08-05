@@ -101,12 +101,29 @@ const defaultFileSystem: ConversationFileSystem = {
  *
  * Counted in stream *events*, not turns: one request produces a tool_use plus a
  * tool_result for every file Claude touches, so a measured G1 conversation reached
- * the old cap of 1000 after just 18 requests over ~39 hours (2.1 MB). That silently
- * discarded the start of a working week. 2000 covers roughly three days of the same
- * usage at ~4 MB, which is the point where the browser still loads a conversation
- * quickly on a phone — the reason this is not simply set much higher.
+ * 1000 after just 18 requests over ~39 hours (2.1 MB).
+ *
+ * Raised to 2000 for history, then put back: the whole file is rewritten on every
+ * message, so the cap is also the size of each write. Files reached 5.17 MB, and at
+ * several events per second across three instances that is tens of MB/s of rewrites
+ * of the same file — enough to make the desktop stutter, and to produce the
+ * `EPERM ... rename` failures that were losing saves outright. Coalescing the writes
+ * (see scheduleSave) removes most of the volume; this keeps each individual write
+ * from doubling on top of it. Raise it only together with a measurement of the write
+ * volume it causes.
  */
-const DEFAULT_MAX_MESSAGES = 2000;
+const DEFAULT_MAX_MESSAGES = 1000;
+
+/**
+ * How long a conversation may sit dirty in memory before it is written.
+ *
+ * Long enough that a burst of stream events collapses into one write, short enough
+ * that a crash costs at most this much of a transcript the CLI also records.
+ */
+const SAVE_COALESCE_MS = 400;
+
+/** Drain/write rounds flush() will run before reporting that something is stuck. */
+const FLUSH_ROUNDS = 5;
 
 export interface FileConversationRepositoryConfig {
   projectPathResolver: ProjectPathResolver;
@@ -123,6 +140,11 @@ export class FileConversationRepository implements ConversationRepository {
   private readonly fileSystem: ConversationFileSystem;
   private readonly maxMessages: number;
   private readonly cache: Map<string, Conversation> = new Map();
+  /** Conversations changed in memory but not yet written — see scheduleSave(). */
+  private readonly dirtyConversations: Map<
+    string,
+    { projectId: string; conversationId: string; timer: NodeJS.Timeout }
+  > = new Map();
   private readonly pendingOperations: PendingOperationsTracker;
   private readonly writeQueues: WriteQueueManager<string>;
   private readonly logger: Logger;
@@ -136,9 +158,110 @@ export class FileConversationRepository implements ConversationRepository {
     this.writeQueues = new WriteQueueManager('conversation-repo');
   }
 
+  /**
+   * Get everything onto disk before the caller proceeds (shutdown, tests, any point
+   * where losing a message would matter).
+   *
+   * The order matters and is not obvious: an addMessage still waiting on its
+   * conversation lock has not marked anything dirty yet, so writing the dirty set
+   * first would miss it entirely — a shutdown would drop exactly the messages that
+   * were in flight. Drain the queues first, then write what that produced, and
+   * repeat, because writing is itself a tracked operation.
+   */
   async flush(): Promise<void> {
-    await this.pendingOperations.flush();
-    await this.writeQueues.flush();
+    for (let round = 0; round < FLUSH_ROUNDS; round++) {
+      await this.pendingOperations.flush();
+      await this.writeQueues.flush();
+
+      if (this.dirtyConversations.size === 0) {
+        return;
+      }
+
+      await this.flushDirtyConversations();
+    }
+
+    if (this.dirtyConversations.size > 0) {
+      this.logger.error('Conversations still unsaved after flush rounds', {
+        remaining: this.dirtyConversations.size,
+        rounds: FLUSH_ROUNDS,
+      });
+    }
+  }
+
+  /**
+   * Write every conversation that has unsaved changes, right now.
+   *
+   * The counterpart to scheduleSave(): anything that must not be lost — shutdown,
+   * the end of a turn, an explicit read — goes through here instead of waiting for
+   * the timer.
+   */
+  private async flushDirtyConversations(): Promise<void> {
+    const pending = Array.from(this.dirtyConversations.keys());
+
+    await Promise.all(pending.map((key) => this.flushConversation(key)));
+  }
+
+  private async flushConversation(cacheKey: string): Promise<void> {
+    const entry = this.dirtyConversations.get(cacheKey);
+
+    if (!entry) {
+      return;
+    }
+
+    this.dirtyConversations.delete(cacheKey);
+
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+
+    const conversation = this.cache.get(cacheKey);
+
+    if (!conversation) {
+      return;
+    }
+
+    await this.saveConversation(entry.projectId, conversation);
+  }
+
+  /**
+   * Mark a conversation dirty and write it once, shortly.
+   *
+   * Every message used to trigger a full rewrite of the conversation file. Nothing
+   * coalesced them — WriteQueueManager serialises, it does not merge — so a turn
+   * emitting stdout/tool_use/tool_result several times a second rewrote a file that
+   * had grown to 5.17 MB, at tens of MB/s once three instances were busy. That was
+   * enough to make the whole desktop stutter, and the constant rewriting is what let
+   * a scanner hold the file open and turn 176 saves into `EPERM ... rename` failures.
+   *
+   * The cache already holds the authoritative copy, so a message is durable-enough
+   * the moment it lands there: readers go through the cache, and flush() forces the
+   * disk write at every point where losing it would matter. What a crash inside the
+   * window can cost is the last few hundred milliseconds of a transcript the CLI is
+   * also keeping — which is a far smaller loss than the writes were causing.
+   */
+  private scheduleSave(projectId: string, conversationId: string): void {
+    const cacheKey = this.getCacheKey(projectId, conversationId);
+    const existing = this.dirtyConversations.get(cacheKey);
+
+    if (existing) {
+      // Already queued: the pending write will pick up this message too.
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void this.flushConversation(cacheKey).catch((err) => {
+        this.logger.error('Coalesced conversation save failed', {
+          projectId,
+          conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }, SAVE_COALESCE_MS);
+
+    // Never hold the process open for a pending transcript write.
+    timer.unref?.();
+
+    this.dirtyConversations.set(cacheKey, { projectId, conversationId, timer });
   }
 
   private trackOperation<T>(promise: Promise<T>): Promise<T> {
@@ -305,7 +428,11 @@ export class FileConversationRepository implements ConversationRepository {
       }
 
       conversation.updatedAt = getCurrentTimestamp();
-      await this.saveConversation(projectId, conversation);
+
+      // Publish to the cache first — that is what readers and the next addMessage
+      // build on — then let the write be coalesced with the rest of the burst.
+      this.cache.set(this.getCacheKey(projectId, conversationId), { ...conversation });
+      this.scheduleSave(projectId, conversationId);
     });
   }
 

@@ -330,6 +330,8 @@ describe('FileConversationRepository', () => {
 
       await repository.addMessage('test-project', 'conv-123', message);
 
+      await repository.flush(); // writes are coalesced; force the pending one out
+
       expect(mockFileSystem.writeFile).toHaveBeenCalled();
       const writtenData = getWriteCallData(mockFileSystem, 0);
       expect(writtenData.messages).toHaveLength(1);
@@ -347,6 +349,8 @@ describe('FileConversationRepository', () => {
       };
 
       await repository.addMessage('test-project', 'conv-123', message);
+
+      await repository.flush(); // writes are coalesced; force the pending one out
 
       expect(mockFileSystem.writeFile).toHaveBeenCalled();
       const writtenData = getWriteCallData(mockFileSystem, 0);
@@ -383,6 +387,8 @@ describe('FileConversationRepository', () => {
 
       await repository.addMessage('test-project', 'conv-123', newMessage);
 
+      await repository.flush(); // writes are coalesced; force the pending one out
+
       const writtenData = getWriteCallData(mockFileSystem, 0);
       expect(writtenData.messages).toHaveLength(10);
       expect(writtenData.messages[9]?.content).toBe('New message');
@@ -409,6 +415,7 @@ describe('FileConversationRepository', () => {
       });
       const after = new Date().toISOString();
 
+      await repository.flush(); // writes are coalesced; force the pending one out
       const writtenData = getWriteCallData(mockFileSystem, 0);
       expect(writtenData.updatedAt >= before).toBe(true);
       expect(writtenData.updatedAt <= after).toBe(true);
@@ -771,6 +778,7 @@ describe('FileConversationRepository', () => {
           timestamp: new Date().toISOString(),
         });
 
+        await repository.flush(); // writes are coalesced; force the pending one out
         const writtenData = getWriteCallData(mockFileSystem, -1);
         expect(writtenData.id).toBe('conv-123');
         expect(writtenData.messages).toHaveLength(1);
@@ -853,17 +861,92 @@ describe('FileConversationRepository', () => {
       ];
 
       await Promise.all(promises);
+      await repository.flush();
 
-      // All messages should have been written (3 writes for 3 messages)
-      expect(writeCount).toBe(3);
-      // Final state should have all 3 messages
+      // Writes are coalesced, so a burst becomes one write — that is the point of
+      // scheduleSave(). What must hold is that no message is lost and none is
+      // interleaved away by a concurrent write.
+      expect(writeCount).toBeLessThan(3);
+      expect(writeCount).toBeGreaterThan(0);
       expect(savedConv.messages).toHaveLength(3);
+      expect(savedConv.messages.map((m) => m.content))
+        .toEqual(['Message 1', 'Message 2', 'Message 3']);
     });
   });
 
   // 스트리밍은 stdout/tool_use/tool_result 각각에 대해 addMessage 를 부른다.
   // 매번 디스크에서 다시 읽으면 대화 전체를 read + JSON.parse 하게 되어,
   // 1000메시지(4.4MB) 기준 건당 약 24ms 동안 이벤트 루프가 멈췄다(측정치).
+  /**
+   * Every message used to rewrite the whole conversation file, with nothing merging
+   * the writes — WriteQueueManager serialises, it does not coalesce. A turn emitting
+   * stdout/tool_use/tool_result several times a second rewrote a file that had grown
+   * to 5.17 MB, at tens of MB/s once three instances were busy: enough to make the
+   * desktop stutter, and enough for a scanner to hold the file open and turn 176
+   * saves into `EPERM ... rename` failures.
+   */
+  describe('coalesced writes', () => {
+    it('collapses a burst of messages into a single write', async () => {
+      const id = (await repository.create('test-project', null)).id;
+      mockFileSystem.writeFile.mockClear();
+
+      // Under the fixture's 10-message cap, so this measures coalescing rather than
+      // trimming.
+      for (let i = 0; i < 8; i++) {
+        await repository.addMessage('test-project', id, {
+          type: 'stdout', content: `chunk ${i}`, timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Nothing on disk yet — the burst is still pending.
+      expect(mockFileSystem.writeFile).not.toHaveBeenCalled();
+
+      await repository.flush();
+
+      expect(mockFileSystem.writeFile).toHaveBeenCalledTimes(1);
+      const written = getWriteCallData(mockFileSystem, -1);
+      expect(written.messages).toHaveLength(8);
+      expect(written.messages[7]!.content).toBe('chunk 7');
+    });
+
+    it('serves pending messages to readers before they reach disk', async () => {
+      const id = (await repository.create('test-project', null)).id;
+      await repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'not yet written', timestamp: new Date().toISOString(),
+      });
+
+      // The cache is authoritative, so delaying the write must not make a message
+      // invisible — that was its own bug class, with the answer appearing only after
+      // a refresh.
+      const messages = await repository.getMessages('test-project', id);
+      expect(messages.map((m) => m.content)).toContain('not yet written');
+    });
+
+    /**
+     * An addMessage still waiting on its conversation lock has not marked anything
+     * dirty yet, so a flush that wrote the dirty set first would miss exactly the
+     * messages that were in flight — a shutdown would drop them.
+     */
+    it('flush waits for in-flight additions, not just dirty ones', async () => {
+      const id = (await repository.create('test-project', null)).id;
+      mockFileSystem.writeFile.mockClear();
+
+      // Deliberately not awaited: these are mid-flight when flush() starts.
+      void repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'in flight 1', timestamp: new Date().toISOString(),
+      });
+      void repository.addMessage('test-project', id, {
+        type: 'stdout', content: 'in flight 2', timestamp: new Date().toISOString(),
+      });
+
+      await repository.flush();
+
+      const written = getWriteCallData(mockFileSystem, -1);
+      expect(written.messages.map((m) => m.content))
+        .toEqual(['in flight 1', 'in flight 2']);
+    });
+  });
+
   describe('streaming write path', () => {
     it('should not re-read the conversation from disk once it is cached', async () => {
       const id = (await repository.create('test-project', null)).id;
@@ -900,6 +983,11 @@ describe('FileConversationRepository', () => {
       await repository.addMessage('test-project', id, {
         type: 'stdout', content: 'persisted', timestamp: new Date().toISOString(),
       });
+      // Land this one for real before arming the failure. Writes are coalesced, so
+      // without the flush both messages would share the failing write — a batch that
+      // fails loses the whole batch, which is a property of coalescing, not the thing
+      // under test here.
+      await repository.flush();
 
       // mockRejectedValueOnce 는 거부된 프로미스를 즉시 만들어 unhandled rejection 이
       // 된다. 호출되는 순간에 던지게 한다.
@@ -907,9 +995,12 @@ describe('FileConversationRepository', () => {
         throw new Error('disk full');
       });
 
-      await expect(repository.addMessage('test-project', id, {
+      // addMessage only schedules now, so the write — and its failure — surfaces
+      // when the coalesced save runs.
+      await repository.addMessage('test-project', id, {
         type: 'stdout', content: 'lost', timestamp: new Date().toISOString(),
-      })).rejects.toThrow('disk full');
+      });
+      await expect(repository.flush()).rejects.toThrow('disk full');
 
       // Cache was dropped, so this re-reads from disk and must not show the
       // message that failed to persist.
