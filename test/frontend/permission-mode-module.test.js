@@ -330,6 +330,19 @@ describe('PermissionModeModule', () => {
       expect(PermissionModeModule.getModeForProject('proj-1')).toBe('acceptEdits');
     });
 
+    it('keeps the stored choice when the user approves a plan', () => {
+      mockState.selectedProjectId = 'proj-1';
+      mockState.permissionMode = 'acceptEdits';
+      PermissionModeModule.setMode('plan'); // the user deliberately works in Plan
+
+      PermissionModeModule.approvePlanAndSwitch();
+
+      // The display follows the mode the server restarts in...
+      expect(mockState.permissionMode).toBe('acceptEdits');
+      // ...but approving a plan is not a request to change the project's setting.
+      expect(PermissionModeModule.getModeForProject('proj-1')).toBe('plan');
+    });
+
     it('restores the stored user choice when returning to the project', () => {
       mockState.selectedProjectId = 'proj-1';
       mockState.permissionMode = 'plan';

@@ -282,14 +282,15 @@
   function approvePlanAndSwitch() {
     api.sendAgentMessage(state.selectedProjectId, 'yes', null, true)
       .done(function() {
+        // Reflect the mode the server restarts in, but leave the stored preference
+        // alone. Approving a plan says "go ahead with this work", not "make Accept
+        // Edits my setting for this project from now on" — and writing it here would
+        // quietly discard a Plan preference the user had deliberately chosen, which
+        // is the same overwrite that syncFromServer was doing.
         state.permissionMode = 'acceptEdits';
         state.pendingPermissionMode = null;
         updatePendingIndicator();
         updateButtons();
-
-        if (state.selectedProjectId) {
-          setModeForProject(state.selectedProjectId, 'acceptEdits');
-        }
       })
       .fail(function(xhr) {
         showErrorToast(xhr, 'Failed to send plan approval');
