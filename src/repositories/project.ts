@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import { getLogger } from '../utils';
+import { getLogger, ConflictError } from '../utils';
 
 export interface MilestoneItemRef {
   phaseId: string;
@@ -499,7 +499,16 @@ export class FileProjectRepository implements ProjectRepository {
     const existingProject = await this.findById(id);
 
     if (existingProject) {
-      throw new Error('Project with this path already exists');
+      // A ConflictError, not a bare Error: formatErrorResponse() keeps the message
+      // only for an AppError and replaces everything else with "An unexpected error
+      // occurred", so this read as a crash in the UI. It is an ordinary, entirely
+      // expected refusal — and the one thing the user needs to know is *which*
+      // project already holds the path, since the id is derived from it and cannot
+      // be shared.
+      throw new ConflictError(
+        `이 경로는 이미 "${existingProject.name}" 프로젝트가 사용 중입니다: ${data.path}. ` +
+        '기존 프로젝트의 이름을 바꾸거나 다른 경로를 지정하세요.'
+      );
     }
 
     const now = new Date().toISOString();

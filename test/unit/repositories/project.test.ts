@@ -1,3 +1,4 @@
+import { ConflictError } from '../../../src/utils';
 import path from 'path';
 import {
   FileProjectRepository,
@@ -192,18 +193,26 @@ describe('FileProjectRepository', () => {
       expect(status.name).toBe('Test Project');
     });
 
-    it('should throw error if project with same path already exists', async () => {
+    /**
+     * Must be a ConflictError, not a bare Error. formatErrorResponse() keeps the
+     * message only for an AppError and replaces anything else with "An unexpected
+     * error occurred", so a bare throw made an ordinary duplicate-path refusal look
+     * like a crash and the user could not tell why "Add Project" failed.
+     */
+    it('rejects a duplicate path with an operational error naming the holder', async () => {
       await repository.create({
         name: 'Test Project',
         path: '/path/to/project',
       });
 
-      await expect(
-        repository.create({
-          name: 'Another Project',
-          path: '/path/to/project',
-        })
-      ).rejects.toThrow('Project with this path already exists');
+      const attempt = repository.create({
+        name: 'Another Project',
+        path: '/path/to/project',
+      });
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictError);
+      // The existing project's name is what tells the user where to look.
+      await expect(attempt).rejects.toThrow('Test Project');
     });
 
     it('should create centralized data directory', async () => {
