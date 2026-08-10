@@ -136,6 +136,8 @@ export class ClaudeBinary implements Agent {
   private _sessionError: string | null = null;
   private _ralphLoopPhase: 'worker' | 'reviewer' | undefined;
   private _mcpConfigPath: string | null = null;
+  /** Last stderr the CLI produced, so a non-zero exit can say why. */
+  private _lastStderr = '';
   private answeredToolIds = new Set<string>();
 
   constructor(config: ClaudeBinaryConfig) {
@@ -507,10 +509,16 @@ export class ClaudeBinary implements Agent {
         this.lineBuffer = '';
       }
 
-      // Emit system message about exit
+      // Emit system message about exit, carrying whatever the CLI last said.
+      //
+      // "Claude agent exited with code 1" on its own is unactionable: it looks
+      // identical whether the CLI rejected a bad session id, could not read its MCP
+      // config, or — as on 2026-08-10 — was killed by another process and never
+      // printed anything at all. Diagnosing that took reading server logs the user
+      // cannot see. The reason belongs in the conversation, next to the failure.
       this.emitMessage({
         type: 'system',
-        content: `Claude agent exited with code ${code}`,
+        content: `Claude agent exited with code ${code}${this.describeExitReason(code)}`,
         timestamp: new Date().toISOString(),
       });
 
@@ -572,6 +580,7 @@ export class ClaudeBinary implements Agent {
     if (stderr) {
       stderr.on('data', (data: Buffer) => {
         const content = stderrDecoder.write(data);
+        this.rememberStderr(content);
         this.logger.warn('STDERR <<< Error output', {
           direction: 'output',
           eventType: 'stderr',
@@ -763,12 +772,45 @@ export class ClaudeBinary implements Agent {
     this.emitter.emit('message', message);
   }
 
+  /** Keep the tail of stderr; ANSI colour codes only get in the way when quoting it. */
+  private rememberStderr(content: string): void {
+    // eslint-disable-next-line no-control-regex
+    const plain = content.replace(/\[[0-9;]*m/g, '').trim();
+
+    if (plain) {
+      this._lastStderr = plain.slice(-500);
+    }
+  }
+
+  /**
+   * A human-readable reason for a non-zero exit, appended to the exit message.
+   *
+   * Silence is itself a diagnosis: the CLI writes to stderr for every failure it
+   * knows about, so exiting non-zero without a word means it did not fail — it was
+   * terminated. Saying so points at the right culprit instead of sending the reader
+   * hunting for a CLI bug that is not there.
+   */
+  private describeExitReason(code: number | null): string {
+    if (code === null || code === 0) {
+      return '';
+    }
+
+    if (this._lastStderr) {
+      return ` — ${this._lastStderr}`;
+    }
+
+    return ' — 오류 출력이 없습니다. 프로세스가 외부에서 종료된 경우입니다.';
+  }
+
   private reset(): void {
     this._collectedOutput = '';
     this.lineBuffer = '';
     this._isWaitingForInput = false;
     this.inputQueue = [];
     this._sessionError = null;
+    // Cleared here, not in the exit handler: reset() runs after the exit message
+    // has already been built from it.
+    this._lastStderr = '';
     this.answeredToolIds.clear();
     this._ralphLoopPhase = undefined;
     this.streamHandler.reset();

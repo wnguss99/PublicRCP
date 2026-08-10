@@ -588,6 +588,48 @@ describe('ClaudeBinary', () => {
         })
       );
     });
+
+    /**
+     * "Claude agent exited with code 1" alone is unactionable — it reads the same
+     * whether the CLI rejected a session id, could not load its MCP config, or was
+     * killed by another process without printing anything. On 2026-08-10 that
+     * ambiguity meant the cause could only be found in server logs the user cannot
+     * see. The reason now travels with the failure.
+     */
+    it('quotes the CLI stderr in the exit message', () => {
+      agent.start('test');
+      const messageListener = jest.fn();
+      agent.on('message', messageListener);
+
+      mockProcess.stderr.emit('data', Buffer.from('No conversation found with session ID: abc-123'));
+
+      const exitCallback = mockProcess.on.mock.calls.find((c) => c[0] === 'exit')?.[1];
+      exitCallback?.(1);
+
+      const exitMsg = messageListener.mock.calls
+        .map((c) => c[0])
+        .find((m: { type: string; content: string }) => m.type === 'system' && m.content.includes('exited with code 1'));
+
+      expect(exitMsg).toBeDefined();
+      expect(exitMsg.content).toContain('No conversation found');
+    });
+
+    it('says so explicitly when a non-zero exit produced no stderr', () => {
+      agent.start('test');
+      const messageListener = jest.fn();
+      agent.on('message', messageListener);
+
+      const exitCallback = mockProcess.on.mock.calls.find((c) => c[0] === 'exit')?.[1];
+      exitCallback?.(1);
+
+      const exitMsg = messageListener.mock.calls
+        .map((c) => c[0])
+        .find((m: { type: string; content: string }) => m.type === 'system' && m.content.includes('exited with code 1'));
+
+      // Silence is the diagnosis: the CLI reports every failure it knows about, so
+      // exiting non-zero without a word means it was terminated from outside.
+      expect(exitMsg.content).toContain('외부에서 종료');
+    });
   });
 
   describe('sendInput', () => {

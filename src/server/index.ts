@@ -152,7 +152,23 @@ export class ExpressHttpServer implements HttpServer {
     }
   }
 
-  async start(): Promise<void> {
+  /**
+   * Claim the port first; only then touch anything this CLAUDITO_HOME owns.
+   *
+   * These cleanups used to run before listen(), which made a *failed* start
+   * destructive. A duplicate instance — one that could never serve, because a
+   * healthy sibling already held the port — would first "clean up orphan
+   * processes", read the live sibling's pids.json, decide its running Claude
+   * agents were leftovers from a previous run, and kill them. Then it discovered
+   * EADDRINUSE and exited. pm2 restarted it four seconds later and it did the same
+   * thing again: 2,100 restarts on 2026-08-10, and every chat message came back
+   * "Claude agent exited with code 1" within three seconds of being sent, with no
+   * stderr — because the CLI was not failing, it was being killed.
+   *
+   * Binding the port is the only proof that this process is the owner of this
+   * instance. Everything destructive happens after it.
+   */
+  private async cleanupAfterClaimingPort(): Promise<void> {
     // Cleanup any orphan processes from previous runs
     await this.cleanupOrphanProcesses();
 
@@ -165,7 +181,9 @@ export class ExpressHttpServer implements HttpServer {
 
     // Interrupted atomic writes leave *.tmp behind; nothing used to remove them.
     pruneAbandonedTempFiles(getDataDirectory());
+  }
 
+  async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       const certPath = process.env['HTTPS_CERT'];
       const keyPath = process.env['HTTPS_KEY'];
@@ -200,7 +218,18 @@ export class ExpressHttpServer implements HttpServer {
 
       this.httpServer.listen(this.config.port, this.config.host, () => {
         this.logAccessibleUrls();
-        resolve();
+
+        // The port is ours, so this instance is the owner and may now clean up
+        // after its predecessor. A start that never gets here must not have
+        // touched anything — see cleanupAfterClaimingPort().
+        void this.cleanupAfterClaimingPort()
+          .catch((err) => {
+            console.error(
+              'Startup cleanup failed:',
+              err instanceof Error ? err.message : err
+            );
+          })
+          .finally(() => resolve());
       });
     });
   }

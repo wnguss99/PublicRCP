@@ -462,6 +462,35 @@ set in `ecosystem.config.js`), so three users on three ports never queue each ot
 the single Claude subscription and `~/.claude*`, which is why rate limits are the
 real contention point.
 
+### A failed start must not touch the instance it could not claim (2026-08-10)
+
+Every chat message came back `Claude agent exited with code 1` within three seconds
+of being sent, on every project and every instance, with **no stderr at all**. The
+CLI was not failing — it was being killed.
+
+`start()` ran `cleanupOrphanProcesses()`, `reconcilePersistedStatuses()` and the temp
+pruners *before* `listen()`. A duplicate instance that could never serve (a healthy
+sibling already held the port) would read that sibling's `pids.json`, decide its
+running Claude agents were leftovers from a previous run, kill them, and only then
+discover EADDRINUSE and exit. pm2 restarted it four seconds later: **2,100 restarts**,
+each one killing whatever agent was running. The same race explains the earlier
+`Invalid MCP configuration: MCP config file not found` — `pruneStaleInstanceTempDirs()`
+from a doomed duplicate deleted a live agent's config between write and spawn.
+
+- **Binding the port is the only proof of ownership.** Everything destructive now runs
+  from inside the `listen()` callback (`cleanupAfterClaimingPort()`); a start that
+  never gets there changes nothing. `test/unit/server/startup-order.test.ts` pins it.
+- **Cleanup failure must not fail a server that is already serving** — it is
+  housekeeping, so it is caught and logged, and `start()` still resolves.
+- **A non-zero exit must say why.** The exit message now carries the CLI's last
+  stderr, and when there is none it says so explicitly — silence is itself the
+  diagnosis, since the CLI reports every failure it knows about, so exiting quietly
+  means it was terminated from outside. Without this the cause was only findable in
+  server logs the user cannot see.
+- Operationally: if pm2 lists an app as `waiting restart` while something else holds
+  its port, pm2 has lost ownership. `pm2 delete` the apps, kill the port holders, then
+  `pm2 start ecosystem.config.js` — a `pm2 restart` will not recover it.
+
 ### The permission mode the user picked is theirs (2026-08-05)
 
 A project set to Accept Edits kept turning up in Plan. Not a bug — `handleEnterPlanMode`
