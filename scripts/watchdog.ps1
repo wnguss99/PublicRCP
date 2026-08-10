@@ -108,6 +108,113 @@ function Test-Instance {
     }
 }
 
+# 포트를 실제로 listen 하고 있는 프로세스 ID. 관리자 권한 프로세스여도 소유 PID 는
+# 읽히므로, pm2 가 보고하는 PID 와 대조할 수 있다.
+function Get-PortOwner {
+    param([string]$Port)
+
+    $conn = Get-NetTCPConnection -LocalPort ([int]$Port) -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($conn) { return [string]$conn.OwningProcess }
+    return $null
+}
+
+# pm2 가 앱마다 보고하는 PID (name -> pid).
+function Get-Pm2Pids {
+    $ErrorActionPreference = 'Continue'
+    $raw = & pm2.cmd jlist 2>&1
+
+    if ($LASTEXITCODE -ne 0) { return $null }
+
+    try {
+        $map = @{}
+        foreach ($app in ($raw | Out-String | ConvertFrom-Json)) {
+            $map[[string]$app.name] = @{ Pid = [string]$app.pid; Status = [string]$app.pm2_env.status }
+        }
+        return $map
+    }
+    catch {
+        return $null
+    }
+}
+
+<#
+포트가 응답한다고 pm2 가 그 인스턴스를 소유하고 있는 것은 아니다.
+
+2026-08-10: pm2 의 claudito-4000/4001 이 EADDRINUSE 로 2,100 번 재시작하는 동안,
+포트는 pm2 가 모르는 다른 프로세스가 쥐고 응답하고 있었다. 워치독은 헬스체크만
+보므로 그 내내 "정상 — 전부 응답" 을 기록했고, 크래시 루프는 아무도 모르게
+계속됐다. 그 루프가 매 회차 기동 정리를 돌려 살아 있는 에이전트를 죽였다
+(그 원인 자체는 서버 기동 순서 수정으로 막았지만, 소유권 상실은 여전히 남는다).
+
+`pm2 restart` 로는 이 상태가 복구되지 않는다 — pm2 가 띄우는 새 프로세스는
+포트를 못 잡고 죽는다. delete → 포트 점유자 정리 → ecosystem start 가 필요하다.
+#>
+function Test-Pm2Ownership {
+    param([Parameter(Mandatory)][string[]]$Ports)
+
+    $pm2 = Get-Pm2Pids
+    if ($null -eq $pm2) { return @() }
+
+    $mismatched = @()
+
+    foreach ($port in $Ports) {
+        $name = "claudito-$port"
+        if (-not $pm2.ContainsKey($name)) { continue }
+
+        $owner = Get-PortOwner $port
+        if (-not $owner) { continue }   # 포트가 안 열려 있으면 down 경로가 처리한다
+
+        $reported = $pm2[$name].Pid
+
+        if ($reported -ne $owner) {
+            Write-Log "소유권 불일치: $name pm2=$reported / 실제 포트 점유=$owner (status=$($pm2[$name].Status))" 'WARN'
+            $mismatched += $port
+        }
+    }
+
+    return $mismatched
+}
+
+# delete → 포트 점유자 정리 → ecosystem 전체 start.
+#
+# 복구는 그 포트에서 돌던 Claude 에이전트를 전부 죽인다. 그래서 죽이기 전에 대상이
+# 정말 claudito(node) 인지 확인한다. 다른 프로그램이 그 포트를 잡은 상황이라면
+# 죽여도 claudito 는 살아나지 않으므로, 죽이지 않고 사람에게 넘기는 편이 낫다.
+function Repair-Pm2Ownership {
+    param([Parameter(Mandatory)][string[]]$Ports)
+
+    Write-Log "소유권 복구 시작 — 포트 $($Ports -join ', ')" 'WARN'
+
+    foreach ($port in $Ports) {
+        & pm2.cmd delete "claudito-$port" 2>&1 | ForEach-Object { Write-Log "  $_" }
+    }
+
+    Start-Sleep -Seconds 2
+
+    foreach ($port in $Ports) {
+        $owner = Get-PortOwner $port
+        if (-not $owner) { continue }
+
+        $proc = Get-Process -Id ([int]$owner) -ErrorAction SilentlyContinue
+
+        if ($null -eq $proc) { continue }
+
+        if ($proc.ProcessName -notin @('node', 'node.exe')) {
+            Write-Log "  포트 $port 점유자가 node 가 아니다 ($($proc.ProcessName), PID $owner) — 죽이지 않는다. 수동 확인 필요" 'ERROR'
+            continue
+        }
+
+        Write-Log "  포트 $port 점유 PID $owner ($($proc.ProcessName)) 종료"
+        Stop-Process -Id ([int]$owner) -Force -ErrorAction SilentlyContinue
+    }
+
+    Start-Sleep -Seconds 3
+    & pm2.cmd start $configPath 2>&1 | ForEach-Object { Write-Log "  $_" }
+    Start-Sleep -Seconds 5
+    & pm2.cmd save 2>&1 | Out-Null
+}
+
 # 포트가 살아 있어도 채팅이 전부 실패할 수 있다: ANTHROPIC_API_KEY 가 사용 불가한
 # 값이면 Claude CLI 가 구독 대신 그걸 써서 "Invalid API key" 로 끝난다(2026-07-30).
 # 헬스체크만 보면 초록불이라 아무도 모른 채 방치되므로 여기서 같이 감시한다.
@@ -261,8 +368,56 @@ if ($down.Count -eq 0) {
 
     Test-AuthWarning -Ports $ports
     Test-BuildDrift -Ports $ports
-    Write-Log "정상 — 포트 $($ports -join ', ') 전부 응답"
-    exit 0
+
+    # 응답한다고 정상인 것은 아니다. pm2 가 그 포트의 주인이 아니면 크래시 루프가
+    # 조용히 돌고 있는 상태이므로, 여기서 잡지 않으면 영원히 "정상" 으로 기록된다.
+    $ownershipState = Join-Path $logDir 'watchdog-ownership.txt'
+    $stolen = @(Test-Pm2Ownership -Ports $ports)
+
+    if ($stolen.Count -eq 0) {
+        Remove-Item $ownershipState -Force -ErrorAction SilentlyContinue
+        Write-Log "정상 — 포트 $($ports -join ', ') 전부 응답"
+        exit 0
+    }
+
+    if ($CheckOnly) {
+        Write-Log "소유권 불일치 감지 (CheckOnly — 복구하지 않음): 포트 $($stolen -join ', ')" 'ERROR'
+        exit 1
+    }
+
+    # 복구는 그 포트의 에이전트를 전부 죽인다. 정상적인 재시작 도중에도 pm2 가 새 PID 를
+    # 보고한 찰나에 옛 프로세스가 아직 포트를 쥐고 있을 수 있는데, 그 한 순간을 보고
+    # 복구를 돌리면 멀쩡히 일하던 사람의 작업이 날아간다. 진짜 소유권 상실은 저절로
+    # 낫지 않으므로(2026-08-10 사고는 며칠을 갔다) 두 주기 연속 같은 포트가 걸릴 때만
+    # 손을 댄다. 늦어지는 비용은 몇 분, 오탐의 비용은 남의 작업이다.
+    $current = (@($stolen | Sort-Object)) -join ','
+    $prev = ''
+
+    if (Test-Path $ownershipState) {
+        $prev = (Get-Content $ownershipState -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+
+    if ($prev -ne $current) {
+        Set-Content -Path $ownershipState -Value $current -Encoding UTF8
+        Write-Log "소유권 불일치 1회차 — 포트 $current. 재시작 직후일 수 있어 다음 주기에 다시 본다" 'WARN'
+        exit 1
+    }
+
+    Write-Log "소유권 불일치 2회 연속 — 포트 $current. 복구한다" 'ERROR'
+    Remove-Item $ownershipState -Force -ErrorAction SilentlyContinue
+
+    Repair-Pm2Ownership -Ports $stolen
+
+    $stillBad = @(Test-Pm2Ownership -Ports $ports)
+    $stillDown = @($ports | Where-Object { -not (Test-Instance $_) })
+
+    if ($stillBad.Count -eq 0 -and $stillDown.Count -eq 0) {
+        Write-Log "소유권 복구 완료 — pm2 가 다시 주인이다"
+        exit 0
+    }
+
+    Write-Log "소유권 복구 실패 — 불일치 $($stillBad -join ', ') / 미응답 $($stillDown -join ', ')" 'ERROR'
+    exit 1
 }
 
 Write-Log "다운 감지: 포트 $($down -join ', ') (전체 $($ports -join ', '))" 'WARN'

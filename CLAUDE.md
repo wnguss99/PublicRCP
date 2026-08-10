@@ -491,6 +491,30 @@ from a doomed duplicate deleted a live agent's config between write and spawn.
   its port, pm2 has lost ownership. `pm2 delete` the apps, kill the port holders, then
   `pm2 start ecosystem.config.js` — a `pm2 restart` will not recover it.
 
+### A responding port is not a healthy instance (2026-08-10)
+
+The watchdog logged `정상 — 포트 4000, 4001, 4002 전부 응답` every two minutes for the
+entire outage above. It only ever asked `/api/health`, and an orphan that pm2 no longer
+owned was answering it. 2,100 crash-restarts went unseen because the thing the watchdog
+measured was still true.
+
+Health now means **the port answers AND pm2's reported PID is the process actually
+listening on it** (`Test-Pm2Ownership` in `scripts/watchdog.ps1`). A mismatch is a
+silent crash loop, and it does not heal on its own, so the watchdog repairs it with the
+only sequence that works: `pm2 delete` → kill the port holder → `pm2 start ecosystem.config.js`.
+
+Three guards keep the cure from being worse than the disease — repair kills every agent
+on that port:
+
+- **Two consecutive detections before repairing** (`logs/watchdog-ownership.txt`). During
+  a legitimate restart pm2 reports the new PID while the old process still holds the port
+  for a moment; acting on that single frame would destroy live work. Real ownership loss
+  lasted days, so waiting one more cycle costs minutes.
+- **Only `node` gets killed.** If something else holds the port, killing it would not bring
+  claudito back anyway — log it and leave it for a human.
+- **Never guess.** If `pm2 jlist` cannot be read (wrong privilege, dead daemon), ownership
+  is unknown, so the check reports nothing rather than repairing on a blind guess.
+
 ### The permission mode the user picked is theirs (2026-08-05)
 
 A project set to Accept Edits kept turning up in Plan. Not a bug — `handleEnterPlanMode`
