@@ -47,9 +47,9 @@ Legacy installs kept project data in `{project-root}/.claudito/`. It is migrated
 the centralized layout on first read and the legacy folder is **left in place** on
 purpose — deleting it would strip that project's history from every other instance.
 
-## Multi-Instance Operation (3 users, 3 ports)
+## Multi-Instance Operation (4 users, 4 ports)
 
-Three PM2 apps — `claudito-4000` / `4001` / `4002` — one per user. Each gets its own
+Four PM2 apps — `claudito-4000` / `4001` / `4002` / `4003` — one per user. Each gets its own
 `PORT`, `CLAUDITO_HOME` and credentials from `ecosystem.config.js` (gitignored;
 `ecosystem.config.example.js` is the template). Sessions are isolated because the
 cookie name carries the port (`claudito_session_4000`).

@@ -34,6 +34,7 @@ const instances = [
   { port: 4000, home: LEGACY_HOME },
   { port: 4001, user: 'user2', password: 'CHANGE_ME_2', home: path.join(INSTANCE_ROOT, 'user2') },
   { port: 4002, user: 'user3', password: 'CHANGE_ME_3', home: path.join(INSTANCE_ROOT, 'user3') },
+  { port: 4003, user: 'user4', password: 'CHANGE_ME_4', home: path.join(INSTANCE_ROOT, 'user4') },
 ];
 
 function buildEnv(inst) {
