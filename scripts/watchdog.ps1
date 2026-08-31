@@ -218,6 +218,12 @@ function Repair-Pm2Ownership {
 # 포트가 살아 있어도 채팅이 전부 실패할 수 있다: ANTHROPIC_API_KEY 가 사용 불가한
 # 값이면 Claude CLI 가 구독 대신 그걸 써서 "Invalid API key" 로 끝난다(2026-07-30).
 # 헬스체크만 보면 초록불이라 아무도 모른 채 방치되므로 여기서 같이 감시한다.
+#
+# OAuth 만료도 같은 모양이다(2026-08-31): "OAuth session expired and could not be
+# refreshed" 로 모든 채팅이 실패했는데, 실패가 CLI 내부에서 나 claudito 로그에는
+# 네 포트 전부 아무 기록이 없었고 나중에 갱신이 성공해 원인을 확정할 수 없었다.
+# 실패하는 구간은 저장된 액세스 토큰이 만료된 채 갱신되지 않은 구간이고, 그건
+# 밖에서 관측되므로 여기 남긴다 — 다음엔 추측이 아니라 시각과 지속시간이 남는다.
 function Test-AuthWarning {
     param([Parameter(Mandatory)][string[]]$Ports)
 
@@ -226,7 +232,16 @@ function Test-AuthWarning {
             $h = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 8
 
             if ($h.authWarning) {
-                Write-Log "인증 경고 :$port → $($h.authWarning) — 채팅이 전부 실패한다. 'npm run validate:instances' 로 확인" 'ERROR'
+                # 조치가 코드마다 다르다. API 키는 환경변수를 고쳐야 하고, OAuth 는
+                # 재로그인이 필요하다. 하나로 뭉뚱그리면 엉뚱한 곳을 보게 된다.
+                $advice = switch -Wildcard ($h.authWarning) {
+                    'OAUTH_REFRESH_TOKEN_EXPIRED' { "재로그인 필요 — 터미널에서 'claude' 실행 후 /login. 자격증명 파일은 네 인스턴스가 공유하므로 한 번만 하면 된다" }
+                    'OAUTH_SESSION_EXPIRED'       { "액세스 토큰 만료 후 갱신 안 됨. 보통 다음 갱신에 스스로 낫는다. 이 줄이 계속 쌓이면 'claude' → /login" }
+                    'OAUTH_CREDENTIALS_*'         { "Claude CLI 자격증명 파일 문제 — 터미널에서 'claude' 실행 후 로그인 상태 확인" }
+                    default                       { "'npm run validate:instances' 로 확인" }
+                }
+
+                Write-Log "인증 경고 :$port → $($h.authWarning) — 채팅이 전부 실패한다. $advice" 'ERROR'
             }
         }
         catch {

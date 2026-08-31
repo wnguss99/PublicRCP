@@ -37,6 +37,7 @@ import { DefaultSlackThreadTracker, SlackThreadTracker } from '../services/slack
 import { createIntegrationsRouter } from './integrations';
 import { DefaultAgentManager, AgentManager } from '../agents';
 import { describeUnusableApiKey } from '../agents/message-builder';
+import { describeClaudeOauth } from '../utils/claude-oauth';
 import { DefaultDockerService, DefaultContainerManager, DefaultDockerCommandRunner, DefaultImageManager } from '../services/docker';
 import { DockerService, ContainerManager, ImageManager } from '../services/docker/types';
 import { createDockerRouter } from './docker';
@@ -194,12 +195,23 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
     // logs. Only the reason is exposed — never the value.
     const apiKeyProblem = describeUnusableApiKey(process.env.ANTHROPIC_API_KEY);
 
+    // "OAuth session expired and could not be refreshed" fails every chat from
+    // inside the CLI, so claudito logs nothing — on 2026-08-31 a full search of
+    // four ports' logs produced no auth entry at all and the cause could not be
+    // established. The expiry is observable from the credentials file, so it
+    // rides the same channel the watchdog already reads.
+    const oauth = describeClaudeOauth();
+
     const publicPayload = {
       status: 'ok',
       version: packageJson.version,
       timestamp: new Date().toISOString(),
       port: Number(process.env.PORT) || 3000,
-      authWarning: apiKeyProblem === null ? null : 'UNUSABLE_ANTHROPIC_API_KEY',
+      // Single code, because Test-AuthWarning in scripts/watchdog.ps1 reads this
+      // field. The API key problem keeps precedence: it never self-heals, while
+      // an expired access token usually does on the next refresh.
+      authWarning:
+        apiKeyProblem !== null ? 'UNUSABLE_ANTHROPIC_API_KEY' : oauth.warningCode,
       // Fingerprint of the compiled code this process loaded. Instances that
       // disagree are running different builds — someone restarted one port and
       // not the others.
@@ -221,7 +233,12 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
 
     res.json({
       ...publicPayload,
-      authWarningDetail: apiKeyProblem,
+      authWarningDetail: apiKeyProblem ?? oauth.problem,
+      // Expiry, and when a refresh last rewrote the file. The second matters
+      // because every instance shares this one file and refresh tokens rotate on
+      // use, so rewrites seconds apart are the fingerprint of two instances
+      // refreshing at once — which revokes the token the loser is still holding.
+      claudeAuth: oauth,
       clauditoHome: process.env.CLAUDITO_HOME || null,
       shellEnabled: deps.shellEnabled !== false,
       claudeCli: cachedClaudeCliInfo,
