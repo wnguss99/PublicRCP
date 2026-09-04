@@ -1,7 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { SettingsRepository, ProjectRepository } from '../repositories';
 import { createEmailService, EmailAttachment } from './email-service';
-import { createZipArchive, cleanupArchive, needsSplit, splitArchive } from './file-archive-service';
+import {
+  createZipArchive,
+  cleanupArchive,
+  needsSplit,
+  splitArchive,
+  isEncryptedZip,
+  ENCRYPTABLE_ARCHIVE_EXTS,
+} from './file-archive-service';
 import { getLogger } from '../utils/logger';
 import { getInstanceTempDir } from '../utils/temp-dirs';
 import * as path from 'path';
@@ -396,6 +403,33 @@ async function handleSendEmail(opts: {
   let zipPath: string | null = null;
   let skippedFiles: string[] = [];
   const ARCHIVE_EXTS = new Set(['.7z', '.zip', '.tar', '.gz', '.tgz', '.tar.gz', '.rar']);
+
+  // Only ever send an archive the recipient can actually open. A `.7z` built by
+  // some other project went out AES-encrypted and Windows refused it, and no
+  // amount of wrapping fixes that — the encrypted member survives inside the
+  // wrapper. Refusing here, with the fix in the message, is the only outcome
+  // that does not waste a round trip on a file that cannot be extracted.
+  for (const filePath of files) {
+    const ext = path.extname(filePath).toLowerCase();
+
+    if (ENCRYPTABLE_ARCHIVE_EXTS.has(ext)) {
+      logger.warn('Refused an archive that may be encrypted', { projectId, file: path.basename(filePath), ext });
+      throw new Error(
+        `${path.basename(filePath)} is a ${ext} archive, which cannot be sent: ` +
+        'these are commonly password-encrypted and Windows refuses to extract ' +
+        'encrypted archives. Pass the original files instead — they are compressed ' +
+        'into a plain zip automatically.'
+      );
+    }
+
+    if (ext === '.zip' && isEncryptedZip(filePath)) {
+      logger.warn('Refused a password-protected zip', { projectId, file: path.basename(filePath) });
+      throw new Error(
+        `${path.basename(filePath)} is a password-protected zip, which Windows ` +
+        'cannot extract. Pass the original files instead so a plain zip is built.'
+      );
+    }
+  }
 
   const isSingleArchive = files.length === 1
     && ARCHIVE_EXTS.has(path.extname(files[0]!).toLowerCase());

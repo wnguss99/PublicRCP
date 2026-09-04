@@ -160,6 +160,56 @@ export async function splitArchive(
   return { parts, totalParts, originalSize: fileSize };
 }
 
+/**
+ * Extensions that may only ever be attached after being re-created as a zip.
+ *
+ * A `.7z` reached a recipient AES-encrypted (`Method = LZMA2:24 7zAES`) and
+ * Windows 11's built-in extractor refuses encrypted archives outright — "이
+ * 유형의 암호화된 보관에 대한 지원은 현재 사용할 수 없습니다". The blocker is the
+ * encryption, not the container: an encrypted zip fails identically.
+ *
+ * Wrapping such a file in a zip does not help, because the encrypted member
+ * survives inside it. The only thing that works is compressing the original
+ * files instead, so these are refused rather than passed through or wrapped.
+ */
+export const ENCRYPTABLE_ARCHIVE_EXTS: ReadonlySet<string> = new Set(['.7z', '.rar']);
+
+/**
+ * True when a zip's first entry is flagged encrypted.
+ *
+ * Bit 0 of the general purpose bit flag in the local file header. Cheap enough
+ * to run on every attachment, and it catches the case the extension cannot:
+ * a `.zip` that is just as unopenable as the `.7z` this exists because of.
+ */
+export function isEncryptedZip(filePath: string): boolean {
+  let fd: number | null = null;
+
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(8);
+    const read = fs.readSync(fd, header, 0, 8, 0);
+
+    if (read < 8) {
+      return false;
+    }
+
+    // Local file header signature. An empty archive starts with the end-of-
+    // central-directory record instead, and has nothing to encrypt.
+    if (header.readUInt32LE(0) !== 0x04034b50) {
+      return false;
+    }
+
+    return (header.readUInt16LE(6) & 0x0001) !== 0;
+  } catch {
+    // Unreadable is not "encrypted" — the caller reports missing files itself.
+    return false;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* best-effort */ }
+    }
+  }
+}
+
 export function cleanupArchive(zipPath: string): void {
   try {
     if (fs.existsSync(zipPath)) {
