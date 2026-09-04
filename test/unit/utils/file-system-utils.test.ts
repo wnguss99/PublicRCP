@@ -6,6 +6,7 @@ import {
   readFileWithFallback,
   deleteFileIfExists,
   safeReadDir,
+  RENAME_ATTEMPTS,
 } from '../../../src/utils/file-system-utils';
 
 jest.mock('fs', () => ({
@@ -92,10 +93,56 @@ describe('file-system-utils', () => {
       mockFsPromises.rename.mockRejectedValue(eperm);
       mockFsPromises.unlink.mockResolvedValue();
 
-      await expect(atomicWriteFile('/test/file.json', 'x')).rejects.toThrow('EPERM');
+      jest.useFakeTimers();
 
-      expect(mockFsPromises.rename).toHaveBeenCalledTimes(5);
+      try {
+        const write = atomicWriteFile('/test/file.json', 'x');
+        const assertion = expect(write).rejects.toThrow('EPERM');
+        await jest.runAllTimersAsync();
+        await assertion;
+      } finally {
+        jest.useRealTimers();
+      }
+
+      expect(mockFsPromises.rename).toHaveBeenCalledTimes(RENAME_ATTEMPTS);
       expect(mockFsPromises.unlink).toHaveBeenCalled();
+    });
+
+    /**
+     * The budget used to be 5 attempts on a 20ms linear backoff — 200ms in
+     * total — and on 2026-08-31 a conversation save burned all five and lost
+     * the write. That file is ~5 MB; Defender holds a handle for as long as it
+     * takes to scan it, which is nowhere near 200ms.
+     */
+    it('outlasts far more consecutive locks than the old 5-attempt budget', async () => {
+      mockFsPromises.writeFile.mockResolvedValue();
+      const eperm = Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      mockFsPromises.rename.mockReset();
+
+      for (let i = 0; i < RENAME_ATTEMPTS - 1; i++) {
+        mockFsPromises.rename.mockRejectedValueOnce(eperm);
+      }
+      mockFsPromises.rename.mockResolvedValue(undefined);
+
+      jest.useFakeTimers();
+
+      try {
+        const write = atomicWriteFile('/test/file.json', 'x');
+        await jest.runAllTimersAsync();
+        await expect(write).resolves.toBeUndefined();
+      } finally {
+        jest.useRealTimers();
+      }
+
+      expect(mockFsPromises.rename).toHaveBeenCalledTimes(RENAME_ATTEMPTS);
+      // The data survives every retry — deleting it early is the loss itself.
+      expect(mockFsPromises.unlink).not.toHaveBeenCalled();
+    });
+
+    it('keeps enough patience to be worth the wait', () => {
+      // Guards the constant against being trimmed back to something that
+      // cannot outlast a virus scan of a multi-megabyte file.
+      expect(RENAME_ATTEMPTS).toBeGreaterThanOrEqual(8);
     });
 
     it('does not retry an error that will never clear', async () => {

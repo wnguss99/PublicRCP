@@ -1,6 +1,12 @@
 /* Base font size and font families (VS Code default style, Korean + English) */
 :root {
-  --claudito-font-size: 17px;
+  /* Must stay equal to the default in loadFontSize() (public/js/app.js).
+     This is applied to `html`, so it scales every rem in the UI, and JS
+     overwrites it from localStorage on load. While the two disagreed (17 here
+     against 14 there) every page load visibly jumped the whole interface, and
+     any failure before loadFontSize() ran left it stuck at the larger size —
+     which reads as "the font got bigger on its own". A test asserts they match. */
+  --claudito-font-size: 14px;
   --claudito-conversation-font-size: 1.07rem;
   --claudito-font-sans: 'Malgun Gothic', '맑은 고딕', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --claudito-font-mono: Consolas, 'Cascadia Code', 'D2Coding', 'Malgun Gothic', '맑은 고딕', 'Courier New', monospace;

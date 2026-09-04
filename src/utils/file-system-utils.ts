@@ -10,12 +10,37 @@ const logger = getLogger('file-system-utils');
  * moments after it is written. The error is transient and clears in milliseconds.
  */
 const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_ATTEMPTS = 5;
-const RENAME_BACKOFF_MS = 20;
+
+/**
+ * How long the retry loop is willing to wait for a Windows lock to clear.
+ *
+ * This was 5 attempts with a 20ms linear backoff — 200ms of total patience —
+ * and on 2026-08-31 a conversation save exhausted all five and lost the write
+ * anyway. 200ms was never enough: the file in question is ~5 MB, and Defender
+ * holds a handle for as long as it takes to scan that, which is far longer.
+ *
+ * Exponential with a ceiling instead, so the common case (one blocked attempt,
+ * cleared in milliseconds) is still fast while a real scan gets seconds rather
+ * than a fifth of one. Worst case is bounded at roughly six seconds; saves are
+ * coalesced and awaited off the request path, so waiting beats losing the data.
+ */
+export const RENAME_ATTEMPTS = 10;
+const RENAME_BACKOFF_BASE_MS = 25;
+const RENAME_BACKOFF_MAX_MS = 1500;
 
 function isTransientRenameError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+}
+
+/**
+ * Half fixed, half jittered. Four instances coalesce saves into the same data
+ * directory, and a purely fixed schedule makes them retry in lockstep — each
+ * collision then reproduces itself on every subsequent attempt.
+ */
+function renameBackoffMs(attempt: number): number {
+  const ceiling = Math.min(RENAME_BACKOFF_BASE_MS * 2 ** (attempt - 1), RENAME_BACKOFF_MAX_MS);
+  return ceiling / 2 + Math.random() * (ceiling / 2);
 }
 
 function delay(ms: number): Promise<void> {
@@ -75,7 +100,7 @@ export async function atomicWriteFile(
         code: (err as NodeJS.ErrnoException).code,
       });
 
-      await delay(RENAME_BACKOFF_MS * attempt);
+      await delay(renameBackoffMs(attempt));
     }
   }
 }
