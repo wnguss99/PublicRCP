@@ -235,13 +235,23 @@ function Test-AuthWarning {
                 # 조치가 코드마다 다르다. API 키는 환경변수를 고쳐야 하고, OAuth 는
                 # 재로그인이 필요하다. 하나로 뭉뚱그리면 엉뚱한 곳을 보게 된다.
                 $advice = switch -Wildcard ($h.authWarning) {
-                    'OAUTH_REFRESH_TOKEN_EXPIRED' { "재로그인 필요 — 터미널에서 'claude' 실행 후 /login. 자격증명 파일은 네 인스턴스가 공유하므로 한 번만 하면 된다" }
-                    'OAUTH_SESSION_EXPIRED'       { "액세스 토큰 만료 후 갱신 안 됨. 보통 다음 갱신에 스스로 낫는다. 이 줄이 계속 쌓이면 'claude' → /login" }
-                    'OAUTH_CREDENTIALS_*'         { "Claude CLI 자격증명 파일 문제 — 터미널에서 'claude' 실행 후 로그인 상태 확인" }
-                    default                       { "'npm run validate:instances' 로 확인" }
+                    'OAUTH_REFRESH_TOKEN_EXPIRING' { "만료 전에 재로그인 — 터미널에서 'claude' 실행 후 /login. 지금 미루면 만료 시점부터 스스로 복구되지 않는다" }
+                    'OAUTH_REFRESH_TOKEN_EXPIRED'  { "재로그인 필요 — 터미널에서 'claude' 실행 후 /login. 자격증명 파일은 네 인스턴스가 공유하므로 한 번만 하면 된다" }
+                    'OAUTH_SESSION_EXPIRED'        { "액세스 토큰 만료 후 갱신 안 됨. 보통 다음 갱신에 스스로 낫는다. 이 줄이 계속 쌓이면 'claude' → /login" }
+                    'OAUTH_CREDENTIALS_*'          { "Claude CLI 자격증명 파일 문제 — 터미널에서 'claude' 실행 후 로그인 상태 확인" }
+                    default                        { "'npm run validate:instances' 로 확인" }
                 }
 
-                Write-Log "인증 경고 :$port → $($h.authWarning) — 채팅이 전부 실패한다. $advice" 'ERROR'
+                # 예고(authWarningSeverity=warning)와 장애를 구분한다. 예고는 채팅이
+                # 멀쩡한 동안 며칠간 뜨는 줄이라, 그걸 ERROR 로 찍으면 "에러인데 아무
+                # 일도 안 일어난다" 를 며칠 학습시킨다. 정작 진짜 장애 때 같은 레벨의
+                # 줄을 아무도 안 믿게 되는 게 2026-09-30 과 같은 비용으로 돌아온다.
+                if ($h.authWarningSeverity -eq 'warning') {
+                    Write-Log "인증 예고 :$port → $($h.authWarning) — 채팅은 아직 정상이다. $advice" 'WARN'
+                }
+                else {
+                    Write-Log "인증 경고 :$port → $($h.authWarning) — 채팅이 전부 실패한다. $advice" 'ERROR'
+                }
             }
         }
         catch {

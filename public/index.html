@@ -963,6 +963,19 @@
 
         <!-- Input Area for Interactive Mode -->
         <div id="interactive-input-area" class="bg-gray-800 border-t border-gray-700 p-2">
+          <!--
+            Every chat fails while the Claude CLI cannot authenticate, and the CLI
+            reports itself logged in throughout, so nothing else on screen says so.
+            This sits directly above the composer — where the user is already
+            looking when a message comes back with an error they cannot act on.
+            It never disables the composer; see "The chat composer must never stay
+            disabled" in CLAUDE.md.
+          -->
+          <div id="claude-auth-banner" class="hidden mb-2 rounded border border-red-600 bg-red-900/40 px-3 py-2">
+            <p id="claude-auth-banner-title" class="text-sm font-semibold text-red-300"></p>
+            <p id="claude-auth-banner-detail" class="mt-0.5 text-xs text-gray-200"></p>
+            <p id="claude-auth-banner-action" class="mt-1 text-xs text-gray-300"></p>
+          </div>
           <!-- Hidden file input for image upload -->
           <input type="file" id="image-upload-input" accept="image/*" class="hidden" multiple />
           <!-- Image Preview Area (hidden by default) -->

@@ -163,6 +163,8 @@
     justAnsweredQuestion: false, // Flag to prevent auto-restoring messages right after answering a question
     isGitOperating: false, // Blocks git UI during operations
     shellEnabled: true, // Whether shell tab is available (disabled when server bound to 0.0.0.0)
+    authWarning: null, // /api/health authWarning code while chats cannot authenticate (null = healthy)
+    authWarningSeverity: null, // 'failing' (chats fail now) | 'warning' (deadline ahead) | null
     projectInputs: {}, // Per-project input text: { projectId: 'input text' }
     currentRalphLoopId: null, // Currently running Ralph Loop task ID
     isRalphLoopRunning: false, // Whether Ralph Loop is currently active
@@ -3952,6 +3954,18 @@
       return;
     }
 
+    // Deliberately does not return: the message is still worth sending, and
+    // refusing it here would destroy what the user typed over a condition read
+    // from a poll that may be a minute stale. The CLI will fail this turn on its
+    // own with a message that names no remedy — this is the remedy, said at the
+    // moment it becomes relevant.
+    // Only when this turn is actually going to fail. A deadline warning fires for
+    // days while chats work normally, and a toast on every send would train the
+    // user to dismiss the one that means something. The banner carries it instead.
+    if (state.authWarning && state.authWarningSeverity !== 'warning') {
+      showToast(authWarningAction(state.authWarning), 'error');
+    }
+
     var project = findProjectById(state.selectedProjectId);
 
     if (!project) {
@@ -7074,6 +7088,7 @@
           loadScrollLockPreference();
           loadDevModeStatus();
           loadAppVersion();
+          setupAuthWarningPoll();
           connectWebSocket();
           setupResizeHandler();
           setupVisibilityHandler();
@@ -7620,8 +7635,108 @@
           state.shellEnabled = data.shellEnabled;
         }
 
+        applyAuthWarning(data);
         handleClaudeCliInfo(data.claudeCli);
       });
+  }
+
+  // How long an authentication problem can exist before the UI says so. The
+  // credentials file is shared by every instance and a refresh rewrites it at
+  // any moment, so this is read repeatedly rather than once at load.
+  var AUTH_WARNING_POLL_MS = 60000;
+
+  /**
+   * What the user has to do about each authWarning code.
+   *
+   * The remedies are genuinely different — an unusable ANTHROPIC_API_KEY needs an
+   * environment change, a dead refresh token needs a fresh sign-in, and an
+   * expired access token usually heals itself on the next refresh. Collapsing
+   * them into one "authentication failed" sends people to the wrong place.
+   */
+  function authWarningAction(code) {
+    switch (code) {
+      case 'OAUTH_REFRESH_TOKEN_EXPIRING':
+        return '아직 채팅은 정상입니다. 만료되면 스스로 복구되지 않으니, 그 전에 호스트 터미널에서 claude 를 실행해 /login 으로 다시 로그인하세요.';
+      case 'OAUTH_REFRESH_TOKEN_EXPIRED':
+        return '호스트 터미널에서 claude 를 실행해 /login 으로 다시 로그인하세요. 자격증명은 네 인스턴스가 공유하므로 한 번만 하면 됩니다.';
+      case 'OAUTH_SESSION_EXPIRED':
+        return '액세스 토큰이 만료된 뒤 아직 갱신되지 않았습니다. 보통 다음 갱신에 스스로 복구됩니다. 이 경고가 계속 남아 있으면 claude → /login 으로 다시 로그인하세요.';
+      case 'OAUTH_CREDENTIALS_MISSING':
+      case 'OAUTH_CREDENTIALS_UNREADABLE':
+        return 'Claude CLI 자격증명 파일에 문제가 있습니다. 호스트 터미널에서 claude 를 실행해 로그인 상태를 확인하세요.';
+      case 'UNUSABLE_ANTHROPIC_API_KEY':
+        return 'ANTHROPIC_API_KEY 환경변수를 CLI 가 쓸 수 없습니다. 해당 변수를 제거한 뒤 인스턴스를 재시작하세요.';
+      default:
+        return '호스트에서 npm run validate:instances 로 확인하세요.';
+    }
+  }
+
+  /**
+   * Surface an authentication problem that makes every chat fail.
+   *
+   * On 2026-09-30 the OAuth refresh token expired and all four instances could
+   * not authenticate for 26 hours. `/api/health` reported it correctly the whole
+   * time and the watchdog logged it as ERROR every five minutes, but nothing read
+   * either: the frontend asked for health once at load and only looked at the
+   * version, so the sole evidence a user ever saw was the CLI's own
+   * "Failed to authenticate: OAuth session expired and could not be refreshed"
+   * arriving as a command error with no stated remedy.
+   */
+  function applyAuthWarning(health) {
+    var code = (health && health.authWarning) || null;
+
+    state.authWarning = code;
+    state.authWarningSeverity = (health && health.authWarningSeverity) || null;
+
+    var $banner = $('#claude-auth-banner');
+
+    if (!code) {
+      $banner.addClass('hidden');
+      return;
+    }
+
+    // A deadline and an outage must not read the same. OAUTH_REFRESH_TOKEN_EXPIRING
+    // fires days early while every chat still works, and a banner claiming
+    // failure at that moment is how the next real one stops being believed.
+    var isFailing = (health && health.authWarningSeverity) !== 'warning';
+
+    $('#claude-auth-banner-title').text(
+      isFailing ? '채팅이 인증 문제로 실패합니다' : '곧 재로그인이 필요합니다'
+    );
+    $banner
+      .toggleClass('border-red-600 bg-red-900/40', isFailing)
+      .toggleClass('border-yellow-600 bg-yellow-900/40', !isFailing);
+    $('#claude-auth-banner-title').toggleClass('text-red-300', isFailing).toggleClass('text-yellow-300', !isFailing);
+
+    // authWarningDetail is only served to a logged-in caller, so fall back to the
+    // code rather than rendering an empty line.
+    $('#claude-auth-banner-detail').text((health && health.authWarningDetail) || code);
+    $('#claude-auth-banner-action').text(authWarningAction(code));
+    $banner.removeClass('hidden');
+  }
+
+  /**
+   * Re-read the warning on a schedule and on every wake-up.
+   *
+   * claudito is driven from a phone over Tailscale, which freezes background
+   * timers whenever the tab is not in front, so an interval alone would leave a
+   * returning user looking at a stale banner — or at none while chats fail.
+   */
+  function setupAuthWarningPoll() {
+    function refresh() {
+      api.getHealth().done(applyAuthWarning);
+    }
+
+    setInterval(refresh, AUTH_WARNING_POLL_MS);
+
+    ['visibilitychange', 'focus', 'online', 'pageshow'].forEach(function(event) {
+      var target = event === 'visibilitychange' ? document : window;
+
+      target.addEventListener(event, function() {
+        if (event === 'visibilitychange' && document.visibilityState !== 'visible') return;
+        refresh();
+      });
+    });
   }
 
   function handleClaudeCliInfo(claudeCli) {

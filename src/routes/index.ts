@@ -212,6 +212,13 @@ export function createApiRouter(deps: ApiRouterDependencies = {}): Router {
       // an expired access token usually does on the next refresh.
       authWarning:
         apiKeyProblem !== null ? 'UNUSABLE_ANTHROPIC_API_KEY' : oauth.warningCode,
+      // Not every warning means chats are failing right now:
+      // OAUTH_REFRESH_TOKEN_EXPIRING fires days early, while everything still
+      // works, precisely so the outage it predicts never happens. The watchdog
+      // and the UI both need to tell the two apart — one is "act this week", the
+      // other is "nothing works".
+      authWarningSeverity:
+        apiKeyProblem !== null ? 'failing' : oauth.severity,
       // Fingerprint of the compiled code this process loaded. Instances that
       // disagree are running different builds — someone restarted one port and
       // not the others.

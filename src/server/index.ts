@@ -9,6 +9,8 @@ import { createAuthRouter } from '../routes/auth';
 import { DefaultWebSocketServer, ProjectWebSocketServer } from '../websocket';
 import { createErrorHandler, formatAccessibleUrls, pruneStaleInstanceTempDirs, pruneAbandonedTempFiles, getDataDirectory } from '../utils';
 import { AuthService, createAuthService } from '../services/auth-service';
+import { AuthMonitor, createAuthMonitor } from '../services/auth-monitor';
+import { FileSettingsRepository } from '../repositories/settings';
 import { createAuthMiddleware, parseCookie, COOKIE_NAME } from '../middleware/auth-middleware';
 import { displayLoginCredentials } from '../utils/qr-generator';
 
@@ -126,6 +128,7 @@ export class ExpressHttpServer implements HttpServer {
   private readonly app: Application;
   private readonly config: AppConfig;
   private readonly authService: AuthService;
+  private authMonitor: AuthMonitor | null = null;
   private shutdownCallback?: () => void;
 
   constructor(deps: ServerDependencies) {
@@ -181,6 +184,39 @@ export class ExpressHttpServer implements HttpServer {
 
     // Interrupted atomic writes leave *.tmp behind; nothing used to remove them.
     pruneAbandonedTempFiles(getDataDirectory());
+
+    // Belongs here for the same reason as everything above: only the instance
+    // that actually owns the port may act on behalf of this CLAUDITO_HOME. A
+    // duplicate that will exit on EADDRINUSE must not mail anyone.
+    this.startAuthMonitor();
+  }
+
+  /**
+   * Watch Claude's OAuth credentials and mail the user before chats break.
+   *
+   * On 2026-09-30 the refresh token expired and every chat failed for 26 hours
+   * while `/api/health` reported it correctly the whole time — the warning
+   * existed, nothing carried it to a person. The UI banner covers anyone looking
+   * at claudito; this covers the nights and weekends when nobody is.
+   */
+  private startAuthMonitor(): void {
+    try {
+      this.authMonitor = createAuthMonitor({
+        settingsRepository: new FileSettingsRepository(getDataDirectory()),
+      });
+
+      // Checked once at startup rather than only after the first interval: a
+      // reboot into an already-expired token would otherwise stay quiet.
+      void this.authMonitor.check();
+      this.authMonitor.start();
+    } catch (error) {
+      // Monitoring is housekeeping. A server that is already serving must not
+      // fall over because it could not start watching its own credentials.
+      console.error(
+        'Auth monitor failed to start:',
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   async start(): Promise<void> {
@@ -280,6 +316,11 @@ export class ExpressHttpServer implements HttpServer {
   }
 
   async stop(): Promise<void> {
+    if (this.authMonitor) {
+      this.authMonitor.stop();
+      this.authMonitor = null;
+    }
+
     // Shutdown run config processes
     const runProcessManager = getRunProcessManager();
 

@@ -34,6 +34,10 @@ export interface ClaudeOauthStatus {
   expired: boolean;
   refreshTokenExpiresAt: string | null;
   refreshTokenExpired: boolean;
+  /** Negative once the refresh token is past its expiry. */
+  refreshTokenExpiresInDays: number | null;
+  /** True while the refresh token is still valid but close enough to act on. */
+  refreshTokenExpiring: boolean;
   /** File mtime — when a refresh last rewrote the credentials. */
   lastRefreshedAt: string | null;
   subscriptionType: string | null;
@@ -42,13 +46,39 @@ export interface ClaudeOauthStatus {
   problem: string | null;
   /** Stable code for /api/health and the watchdog, or null when healthy. */
   warningCode: ClaudeOauthWarningCode | null;
+  /**
+   * How bad the warning is right now.
+   *
+   * `failing` means chats are failing at this moment. `warning` means they still
+   * work and something has to be done before a deadline. Conflating the two is
+   * how a banner that says "chats are failing" ends up on screen while chats are
+   * fine — after which nobody believes the next one.
+   */
+  severity: ClaudeOauthSeverity | null;
 }
+
+export type ClaudeOauthSeverity = 'failing' | 'warning';
 
 export type ClaudeOauthWarningCode =
   | 'OAUTH_CREDENTIALS_MISSING'
   | 'OAUTH_CREDENTIALS_UNREADABLE'
   | 'OAUTH_SESSION_EXPIRED'
-  | 'OAUTH_REFRESH_TOKEN_EXPIRED';
+  | 'OAUTH_REFRESH_TOKEN_EXPIRED'
+  | 'OAUTH_REFRESH_TOKEN_EXPIRING';
+
+/**
+ * How long before the refresh token dies the warning starts.
+ *
+ * The refresh token is the only credential here that does not recover on its
+ * own: once it is past its expiry nothing can refresh, every chat fails, and
+ * only a human running `claude` → `/login` fixes it. Its expiry is recorded in
+ * the credentials file, so the outage is knowable days ahead — on 2026-09-30 it
+ * was knowable and nobody was told, which cost 26 hours.
+ *
+ * Five days spans a weekend and a public holiday, so a warning that appears on a
+ * Friday evening is still actionable on the next working day.
+ */
+export const REFRESH_TOKEN_WARN_DAYS = 5;
 
 interface RawOauth {
   expiresAt?: unknown;
@@ -153,6 +183,8 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
     expired: false,
     refreshTokenExpiresAt: null,
     refreshTokenExpired: false,
+    refreshTokenExpiresInDays: null,
+    refreshTokenExpiring: false,
     lastRefreshedAt: null,
     subscriptionType: null,
     rateLimitTier: null,
@@ -165,6 +197,7 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
       readable: false,
       problem: 'Claude CLI credentials file not found — run `claude` and sign in',
       warningCode: 'OAUTH_CREDENTIALS_MISSING',
+      severity: 'failing',
     };
   }
 
@@ -178,6 +211,7 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
       lastRefreshedAt,
       problem: 'Claude CLI credentials file is unreadable or has no OAuth section',
       warningCode: 'OAUTH_CREDENTIALS_UNREADABLE',
+      severity: 'failing',
     };
   }
 
@@ -190,6 +224,15 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
   const expired = expiresAtMs !== null && expiresAtMs <= now;
   const refreshTokenExpired = refreshExpiresAtMs !== null && refreshExpiresAtMs <= now;
 
+  const refreshTokenExpiresInDays =
+    refreshExpiresAtMs === null
+      ? null
+      : Math.round(((refreshExpiresAtMs - now) / 86_400_000) * 10) / 10;
+  const refreshTokenExpiring =
+    refreshTokenExpired === false &&
+    refreshTokenExpiresInDays !== null &&
+    refreshTokenExpiresInDays <= REFRESH_TOKEN_WARN_DAYS;
+
   const detail = {
     credentialsPath: filePath,
     present: true,
@@ -199,6 +242,8 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
     expired,
     refreshTokenExpiresAt: toIso(refreshExpiresAtMs),
     refreshTokenExpired,
+    refreshTokenExpiresInDays,
+    refreshTokenExpiring,
     lastRefreshedAt,
     subscriptionType: readString(file.oauth.subscriptionType),
     rateLimitTier: readString(file.oauth.rateLimitTier),
@@ -212,6 +257,7 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
       ...detail,
       problem: 'Claude OAuth refresh token has expired — sign in again with `claude` → /login',
       warningCode: 'OAUTH_REFRESH_TOKEN_EXPIRED',
+      severity: 'failing',
     };
   }
 
@@ -222,8 +268,24 @@ export function describeClaudeOauth(credentialsPath?: string): ClaudeOauthStatus
         'Claude OAuth access token is past its expiry and has not been refreshed — ' +
         'chats fail until a refresh succeeds',
       warningCode: 'OAUTH_SESSION_EXPIRED',
+      severity: 'failing',
     };
   }
 
-  return { ...detail, problem: null, warningCode: null };
+  // Reported last, and only once nothing is actually broken: this is the one
+  // warning that fires while every chat still works. It exists because the
+  // failure it predicts does not heal on its own, and its date is known in
+  // advance — the whole point is to be read before the outage, not during it.
+  if (refreshTokenExpiring) {
+    return {
+      ...detail,
+      problem:
+        `Claude OAuth refresh token expires in ${refreshTokenExpiresInDays} days — ` +
+        'sign in again with `claude` → /login before it does, or every chat will fail',
+      warningCode: 'OAUTH_REFRESH_TOKEN_EXPIRING',
+      severity: 'warning',
+    };
+  }
+
+  return { ...detail, problem: null, warningCode: null, severity: null };
 }

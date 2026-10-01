@@ -6,6 +6,7 @@ import {
   describeClaudeOauth,
   defaultCredentialsPath,
   resetClaudeOauthCache,
+  REFRESH_TOKEN_WARN_DAYS,
 } from '../../../src/utils/claude-oauth';
 
 /**
@@ -109,6 +110,81 @@ describe('describeClaudeOauth', () => {
     expect(status.warningCode).toBe('OAUTH_REFRESH_TOKEN_EXPIRED');
     expect(status.refreshTokenExpired).toBe(true);
     expect(status.problem).toContain('/login');
+    expect(status.severity).toBe('failing');
+  });
+
+  /**
+   * The refresh token is the only credential here that cannot recover by
+   * itself, and its expiry is written in the file days ahead. On 2026-09-30 it
+   * expired, every chat on all four instances failed for 26 hours, and the date
+   * had been sitting in `refreshTokenExpiresAt` the whole time.
+   *
+   * Warning after the fact is what already failed. These tests pin the warning
+   * that arrives before it — and, just as importantly, pin that it does not
+   * masquerade as an outage while everything still works.
+   */
+  describe('the refresh token expiry is announced before it bites', () => {
+    it('warns while the token is still valid, inside the notice window', () => {
+      write({ ...healthy(), refreshTokenExpiresAt: Date.now() + 3 * 24 * HOUR });
+
+      const status = describeClaudeOauth(file);
+
+      expect(status.warningCode).toBe('OAUTH_REFRESH_TOKEN_EXPIRING');
+      expect(status.refreshTokenExpired).toBe(false);
+      expect(status.refreshTokenExpiring).toBe(true);
+      expect(status.refreshTokenExpiresInDays).toBeCloseTo(3, 0);
+      expect(status.problem).toContain('/login');
+    });
+
+    it('says the chats still work — this is a deadline, not an outage', () => {
+      write({ ...healthy(), refreshTokenExpiresAt: Date.now() + 2 * 24 * HOUR });
+
+      // A warning that claims chats are failing while they are fine spends the
+      // credibility the real one depends on.
+      expect(describeClaudeOauth(file).severity).toBe('warning');
+    });
+
+    it('stays silent while the expiry is far away', () => {
+      write({
+        ...healthy(),
+        refreshTokenExpiresAt: Date.now() + (REFRESH_TOKEN_WARN_DAYS + 2) * 24 * HOUR,
+      });
+
+      const status = describeClaudeOauth(file);
+
+      expect(status.warningCode).toBeNull();
+      expect(status.refreshTokenExpiring).toBe(false);
+      expect(status.severity).toBeNull();
+    });
+
+    it('never outranks a failure that is happening now', () => {
+      // Both are true: the refresh token dies tomorrow *and* the access token is
+      // already expired. Reporting the deadline would describe next week while
+      // every chat is failing this minute.
+      write({
+        ...healthy(),
+        expiresAt: Date.now() - 5 * 60_000,
+        refreshTokenExpiresAt: Date.now() + 12 * HOUR,
+      });
+
+      const status = describeClaudeOauth(file);
+
+      expect(status.warningCode).toBe('OAUTH_SESSION_EXPIRED');
+      expect(status.severity).toBe('failing');
+      expect(status.refreshTokenExpiring).toBe(true);
+    });
+
+    it('an expired token is expired, never "expiring"', () => {
+      // A token that died two days ago is inside the notice window by distance,
+      // so the two conditions have to be ordered by sign, not by proximity.
+      write({ ...healthy(), refreshTokenExpiresAt: Date.now() - 2 * 24 * HOUR });
+
+      const status = describeClaudeOauth(file);
+
+      expect(status.warningCode).toBe('OAUTH_REFRESH_TOKEN_EXPIRED');
+      expect(status.refreshTokenExpiring).toBe(false);
+      expect(status.refreshTokenExpiresInDays).toBeLessThan(0);
+    });
   });
 
   it('reports when a refresh last rewrote the file', () => {

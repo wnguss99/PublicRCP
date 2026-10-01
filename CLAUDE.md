@@ -159,6 +159,86 @@ Removing the variable for good needs the registry entry gone, not just
 `Remove-ItemProperty HKCU:\Environment -Name ANTHROPIC_API_KEY`. Already-running
 PM2 processes keep the old value until the daemon restarts.
 
+### Detecting an auth failure is not the same as reporting it (2026-09-30)
+
+The Claude OAuth **refresh token expired** and every chat on all four instances
+failed for **26 hours** — 2026-09-30 14:29 to 2026-10-01 16:57, by which point a
+refresh had succeeded and the live state looked fine again. Nothing in the
+detection path was broken. `/api/health` reported
+`authWarning: "OAUTH_REFRESH_TOKEN_EXPIRED"` correctly the entire time, and
+`Test-AuthWarning` logged it as ERROR every five minutes — 3,180 lines of it.
+
+Both ends terminated in a log file nobody reads. What a user saw was the CLI's
+own `Failed to authenticate: OAuth session expired and could not be refreshed`
+arriving as a command error, naming no cause and no remedy, and
+`modal-claude-auth-warning` stayed shut throughout because it keys on
+`claudeCli.auth.loggedIn` — which stays **true** while the stored token is dead.
+That is the same shape as the `ANTHROPIC_API_KEY` failure above: the CLI reports
+itself logged in while nothing can authenticate.
+
+- **The frontend reads `authWarning`, not just `version`.** `loadAppVersion()`
+  asked `/api/health` once at load and used one field out of the response. The
+  warning is now applied through `applyAuthWarning()`, which renders
+  `#claude-auth-banner` directly above the composer.
+- **Health is re-read, and on wake-up too.** A single read at load cannot see an
+  expiry that happens later, and claudito is driven from a phone over Tailscale,
+  which freezes background timers — so `setupAuthWarningPoll()` runs on an
+  interval *and* on `visibilitychange`/`focus`/`online`/`pageshow`, like the
+  composer watchdog and for the same reason.
+- **Each code carries its own remedy** (`authWarningAction()`). Re-login, wait
+  for the next refresh, and remove an environment variable are three different
+  instructions; one generic "authentication failed" sends people to the wrong
+  place. `OAUTH_SESSION_EXPIRED` in particular normally heals itself and must not
+  read as "sign in again".
+- **A warning never refuses the send.** It is read from a poll that can be a
+  minute stale, so refusing would destroy what the user typed over a condition
+  that may already be fixed — and the composer is never disabled either (see
+  below). The send proceeds; the toast supplies the remedy the CLI's own error
+  omits. `test/frontend/auth-warning-banner.test.js` pins all of this.
+### The expiry was knowable days ahead — so it is now announced ahead (2026-10-01)
+
+The outage above could not have been prevented by reacting faster, because the
+refresh token does not recover on its own: once it is past `refreshTokenExpiresAt`
+nothing refreshes, every chat fails, and only a human running `claude` → `/login`
+fixes it. What it *could* have been prevented by is reading the date, which was
+sitting in the credentials file the entire time.
+
+- **`OAUTH_REFRESH_TOKEN_EXPIRING` fires `REFRESH_TOKEN_WARN_DAYS` (5) before the
+  deadline**, while everything still works. Five days spans a weekend, so a
+  warning raised on a Friday evening is still actionable on Monday.
+- **A deadline is not an outage, and `severity` keeps them apart.** `failing`
+  means chats are failing now; `warning` means act this week. The banner, the
+  send toast and the watchdog log level all key on it. A red "chats are failing"
+  shown for five days while chats work is how the next real one stops being
+  believed — the same mistake as announcing every `rate_limit_event`.
+- **A current failure always outranks a future one.** When the access token is
+  expired *and* the refresh token dies tomorrow, the report is the live failure.
+- **`src/services/auth-monitor.ts` mails the user**, from the instance's own
+  configured account to its own `defaultRecipient`, so each of the four users is
+  told about their own instance. It starts from `cleanupAfterClaimingPort()` —
+  only the process that actually owns the port may mail anyone, or a duplicate
+  dying on EADDRINUSE would alert everybody on every pm2 restart.
+- **It never tries to repair anything.** Re-login is interactive by nature; the
+  only useful act here is making sure a human finds out.
+- **`OAUTH_SESSION_EXPIRED` waits out a two-hour grace period before it mails.**
+  That one does heal itself: when nothing is running the access token sits
+  expired until the next use refreshes it, which is exactly what happened
+  overnight on 2026-09-10 (00:01→09:51) and 2026-09-16 (01:53→18:01) — ~26 hours
+  of warnings, no action taken, none needed. Mailing on sight would have sent two
+  false alarms and spent the credibility the real alert depends on.
+- **The same problem re-sends at most every 12 hours, but an escalation always
+  sends.** 26 hours at the check interval is ~104 identical mails; `EXPIRING`
+  becoming `EXPIRED` is a new fact, not a repeat. A send that *fails* does not
+  mark itself delivered, so a transient SMTP error cannot swallow the only
+  notification there is.
+- **A desktop toast was considered and rejected.** The watchdog's scheduled task
+  runs `-LogonType S4U`, which has no interactive desktop session, so a
+  `NotifyIcon` balloon from it would silently reach nobody — the very failure
+  being fixed, reintroduced as its own remedy.
+- Not solved, and not solvable here: the refresh token still expires on its own
+  schedule. Nothing in this repo can stop that. What is now impossible is for the
+  expiry to arrive unannounced.
+
 ### ExitPlanMode has two approval paths — they must never disagree
 
 `ExitPlanMode` is gated twice, by design: claudito's own plan card
