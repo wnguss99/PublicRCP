@@ -6,9 +6,13 @@
   리프레시 토큰은 30일마다 만료되고 스스로 복구되지 않는다. 만료되면 네 인스턴스
   전부 채팅이 멈춘다(2026-09-30 에 26시간 정지, 2026-10-15 에도 13시간).
 
-  로그인 자체는 자동화할 수 없다. `claude setup-token` 을 비대화형으로 돌리면
-  입력을 기다리다 끝나지 않는다 — OAuth 는 사람이 브라우저에서 본인임을 증명하는
-  것이 목적이라, 스크립트가 사람 없이 통과할 수 있으면 보안 모델이 무너진다.
+  로그인 자체는 자동화할 수 없다. 비대화형으로 돌리면 입력을 기다리다 끝나지
+  않는다 — OAuth 는 사람이 브라우저에서 본인임을 증명하는 것이 목적이라,
+  스크립트가 사람 없이 통과할 수 있으면 보안 모델이 무너진다.
+
+  쓰는 명령은 `claude auth login` 이다. `claude setup-token` 이 아니다 —
+  2026-10-20 에 그것으로 로그인까지 마쳤는데 자격증명 파일이 전혀 바뀌지 않아
+  만료가 그대로였다. setup-token 은 환경변수용 장기 토큰을 출력할 뿐이다.
 
   그래서 이 스크립트가 하는 일은 '대신 로그인' 이 아니라 **사람이 할 일을 한 번의
   브라우저 인증으로 줄이는 것**이다. 날짜를 기억하고, 명령어를 기억하고, 결과를
@@ -153,11 +157,16 @@ Write-Host ''
 Write-Host '  이 파일 하나가 네 인스턴스 전체의 인증이다. 문제가 생기면' -ForegroundColor DarkGray
 Write-Host "  이 백업을 $credentials 로 되돌리면 된다." -ForegroundColor DarkGray
 
+# 로그인 명령이 이 파일을 건드렸는지 보려고 잡아둔다. 만료일 비교만으로는
+# 2026-10-20 의 실패를 설명하지 못했다 — 그때는 로그인이 성공한 것처럼 보였고
+# 만료일만 그대로였다. 파일이 아예 안 바뀌었다는 사실이 더 직접적인 신호다.
+$mtimeBefore = (Get-Item $credentials).LastWriteTime
+
 # ── 3. 갱신 ────────────────────────────────────────────────────────────────
 Section '3. 토큰 갱신'
 
 if ($WhatIf) {
-    Write-Host '  -WhatIf — `claude setup-token` 을 실행하지 않는다.' -ForegroundColor Yellow
+    Write-Host '  -WhatIf — `claude auth login` 을 실행하지 않는다.' -ForegroundColor Yellow
 }
 else {
     Write-Host '  이제 브라우저가 열리거나 URL 과 코드가 표시된다.' -ForegroundColor White
@@ -166,14 +175,27 @@ else {
     Write-Host '  이 단계만은 사람이 해야 한다 — 자동화할 수 없다.' -ForegroundColor DarkGray
     Write-Host ''
 
-    # Start-Job 이나 리디렉션으로 감싸면 안 된다. 대화형 프롬프트가 콘솔을
-    # 직접 써야 하고, 감싸는 순간 입력을 못 받아 그대로 멈춘다.
-    & claude setup-token
+    <#
+    `claude auth login` 이어야 한다. `setup-token` 이 아니다.
+
+    2026-10-20 에 이 스크립트가 setup-token 을 돌렸고 사용자가 브라우저 로그인까지
+    마쳤는데, 아무것도 갱신되지 않았다: refreshTokenExpiresAt 0.0일 변화,
+    .credentials.json 의 mtime 은 8시간 주기 자동 갱신 시각 그대로,
+    CLAUDE_CODE_OAUTH_TOKEN·ANTHROPIC_API_KEY·ANTHROPIC_AUTH_TOKEN 전부 미설정.
+
+    setup-token 은 환경변수에 넣어 쓰는 장기 토큰을 출력할 뿐, 이 경로의
+    자격증명 파일을 바꾸지 않는다. claudito·워치독·CLI 세션이 읽는 것은
+    .credentials.json 이고, 그것을 갱신하는 것은 auth login 이다.
+
+    Start-Job 이나 리디렉션으로 감싸면 안 된다. 대화형 프롬프트가 콘솔을
+    직접 써야 하고, 감싸는 순간 입력을 못 받아 그대로 멈춘다.
+    #>
+    & claude auth login
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
-        Write-Host "  setup-token 이 0 이 아닌 코드로 끝났다 (exit=$LASTEXITCODE)." -ForegroundColor Yellow
-        Write-Host '  아래 결과를 확인하고, 안 늘어났으면 `claude auth login` 을 시도하라.' -ForegroundColor Yellow
+        Write-Host "  auth login 이 0 이 아닌 코드로 끝났다 (exit=$LASTEXITCODE)." -ForegroundColor Yellow
+        Write-Host '  아래 결과를 확인하라.' -ForegroundColor Yellow
     }
 }
 
@@ -193,6 +215,9 @@ if ($null -ne $after -and $null -ne $before -and
 
 Write-Host ''
 
+$mtimeAfter = (Get-Item $credentials -ErrorAction SilentlyContinue).LastWriteTime
+$fileTouched = $mtimeAfter -ne $mtimeBefore
+
 if ($WhatIf) {
     Write-Host '  (-WhatIf 이므로 변화 없음이 정상)' -ForegroundColor DarkGray
 }
@@ -201,9 +226,24 @@ elseif ($improved) {
     Write-Host ("  ✓ 갱신 성공 — 만료일이 {0:N1} 일 뒤로 밀렸다." -f $gain) -ForegroundColor Green
     Write-Host "    새 만료일까지 $($after.refreshTokenExpiresInDays) 일 남았다." -ForegroundColor Green
 }
+elseif (-not $fileTouched) {
+    # 2026-10-20 이 정확히 이 경우였다. 브라우저 로그인은 성공했는데 명령이
+    # 이 파일을 건드리지 않아 아무것도 바뀌지 않았고, 화면에는 '만료일이
+    # 늘어나지 않았다' 만 떠서 그게 실패라는 게 전달되지 않았다.
+    Write-Host '  ✗ 자격증명 파일이 전혀 바뀌지 않았다 — 갱신되지 않았다.' -ForegroundColor Red
+    Write-Host "    $credentials" -ForegroundColor DarkGray
+    Write-Host "    수정시각이 그대로다: $mtimeBefore" -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '    로그인 화면을 통과했더라도, 그 명령이 이 파일을 쓰지 않으면' -ForegroundColor Yellow
+    Write-Host '    아무 효과가 없다. 터미널에서 직접 실행해 보라:' -ForegroundColor Yellow
+    Write-Host '      claude auth login' -ForegroundColor White
+}
 else {
-    Write-Host '  ✗ 만료일이 늘어나지 않았다.' -ForegroundColor Red
-    Write-Host '    setup-token 이 기대와 다르게 동작했을 수 있다. 대안:' -ForegroundColor Yellow
+    # 파일은 바뀌었는데 만료일이 안 늘었다 = 8시간 주기 자동 갱신이 끼어든 것일
+    # 수 있다. 위와 원인이 다르므로 안내도 달라야 한다.
+    Write-Host '  ✗ 파일은 바뀌었지만 만료일이 늘어나지 않았다.' -ForegroundColor Red
+    Write-Host "    수정시각: $mtimeBefore → $mtimeAfter" -ForegroundColor DarkGray
+    Write-Host '    액세스 토큰 자동 갱신만 일어났을 수 있다. 다시 시도하라:' -ForegroundColor Yellow
     Write-Host '      claude auth login' -ForegroundColor White
 }
 

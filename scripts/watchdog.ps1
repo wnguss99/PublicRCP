@@ -235,9 +235,9 @@ function Test-AuthWarning {
                 # 조치가 코드마다 다르다. API 키는 환경변수를 고쳐야 하고, OAuth 는
                 # 재로그인이 필요하다. 하나로 뭉뚱그리면 엉뚱한 곳을 보게 된다.
                 $advice = switch -Wildcard ($h.authWarning) {
-                    'OAUTH_REFRESH_TOKEN_EXPIRING' { "만료 전에 재로그인 — 터미널에서 'claude' 실행 후 /login. 지금 미루면 만료 시점부터 스스로 복구되지 않는다" }
-                    'OAUTH_REFRESH_TOKEN_EXPIRED'  { "재로그인 필요 — 터미널에서 'claude' 실행 후 /login. 자격증명 파일은 네 인스턴스가 공유하므로 한 번만 하면 된다" }
-                    'OAUTH_SESSION_EXPIRED'        { "액세스 토큰 만료 후 갱신 안 됨. 보통 다음 갱신에 스스로 낫는다. 이 줄이 계속 쌓이면 'claude' → /login" }
+                    'OAUTH_REFRESH_TOKEN_EXPIRING' { "만료 전에 재로그인 — 터미널에서 'claude auth login'. 지금 미루면 만료 시점부터 스스로 복구되지 않는다" }
+                    'OAUTH_REFRESH_TOKEN_EXPIRED'  { "재로그인 필요 — 터미널에서 'claude auth login'. 자격증명 파일은 네 인스턴스가 공유하므로 한 번만 하면 된다" }
+                    'OAUTH_SESSION_EXPIRED'        { "액세스 토큰 만료 후 갱신 안 됨. 보통 다음 갱신에 스스로 낫는다. 이 줄이 계속 쌓이면 'claude auth login'" }
                     'OAUTH_CREDENTIALS_*'          { "Claude CLI 자격증명 파일 문제 — 터미널에서 'claude' 실행 후 로그인 상태 확인" }
                     default                        { "'npm run validate:instances' 로 확인" }
                 }
